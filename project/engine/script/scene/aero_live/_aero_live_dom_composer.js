@@ -49,6 +49,9 @@ export class AeroLiveDomComposer {
         const rect = state.rect;
         const scaleRatio = Math.max(0.0001, getScaleRatio());
         const canvasOffset = getCanvasOffset();
+        const insideOverlayHost = this.host?.id === 'overlaylayerhost';
+        const hostOffsetX = insideOverlayHost ? 0 : canvasOffset.x;
+        const hostOffsetY = insideOverlayHost ? 0 : canvasOffset.y;
         const cssPixel = (renderPixels) => `${Math.max(0, renderPixels / scaleRatio)}px`;
         const viewportHeight = Math.max(1, Number(state.viewportHeight) || 720);
         const uiWidth = Math.max(1, Number(state.uiWidth) || 1280);
@@ -56,14 +59,18 @@ export class AeroLiveDomComposer {
 
         Object.assign(this.form.style, {
             display: state.visible ? 'grid' : 'none',
-            left: `${canvasOffset.x + rect.x / scaleRatio}px`,
-            top: `${canvasOffset.y + rect.y / scaleRatio}px`,
+            left: `${hostOffsetX + rect.x / scaleRatio}px`,
+            top: `${hostOffsetY + rect.y / scaleRatio}px`,
             width: `${rect.w / scaleRatio}px`,
             height: `${rect.h / scaleRatio}px`,
             gridTemplateColumns: `${Math.max(64, rect.w * 0.2) / scaleRatio}px minmax(0, 1fr) ${Math.max(52, uiWidth * UI.DOM_SEND_WIDTH_UIWW / 100) / scaleRatio}px`,
             borderWidth: cssPixel(borderRenderPixels),
             borderRadius: cssPixel(viewportHeight * UI.PANEL_RADIUS_WH / 100),
-            boxShadow: `0 ${cssPixel(viewportHeight * 0.008)} ${cssPixel(viewportHeight * 0.02)} ${COLORS.GLASS_SHADOW}`
+            boxShadow: [
+                `0 ${cssPixel(viewportHeight * 0.012)} ${cssPixel(viewportHeight * 0.032)} ${COLORS.GLASS_SHADOW}`,
+                `inset 0 ${cssPixel(borderRenderPixels)} 0 ${COLORS.GLASS_HIGHLIGHT || COLORS.GLASS_BORDER}`,
+                `inset 0 -${cssPixel(borderRenderPixels)} 0 ${COLORS.GLASS_INNER_EDGE || COLORS.AQUA}`
+            ].join(', ')
         });
         Object.assign(this.maskLabel.style, {
             padding: `0 ${cssPixel(uiWidth * 0.005)}`,
@@ -102,6 +109,7 @@ export class AeroLiveDomComposer {
             this.form.parentNode.removeChild(this.form);
         }
         this.form = null;
+        this.host = null;
         this.maskLabel = null;
         this.input = null;
         this.sendButton = null;
@@ -114,19 +122,24 @@ export class AeroLiveDomComposer {
      * @private
      */
     #createDom() {
+        this.host = typeof document.getElementById === 'function'
+            ? (document.getElementById('overlaylayerhost') || document.body)
+            : document.body;
         this.form = document.createElement('form');
         this.form.className = 'aero-live-composer';
         this.form.setAttribute('aria-label', 'AERO LIVE 자유 채팅 입력');
         Object.assign(this.form.style, {
             position: 'absolute',
-            zIndex: '55',
+            zIndex: '2',
             display: 'none',
             gridTemplateColumns: 'auto minmax(0, 1fr) auto',
             alignItems: 'stretch',
             boxSizing: 'border-box',
             overflow: 'hidden',
             pointerEvents: 'auto',
-            background: COLORS.DARK_GLASS,
+            background: 'linear-gradient(180deg, rgba(14,57,84,0.62), rgba(7,35,59,0.44))',
+            backdropFilter: 'blur(18px) saturate(145%)',
+            WebkitBackdropFilter: 'blur(18px) saturate(145%)',
             borderStyle: 'solid',
             borderColor: COLORS.GLASS_BORDER,
             fontFamily: FONT_FAMILY
@@ -140,6 +153,7 @@ export class AeroLiveDomComposer {
             justifyContent: 'center',
             boxSizing: 'border-box',
             color: COLORS.AQUA,
+            background: 'linear-gradient(135deg, rgba(66,224,208,0.2), rgba(154,133,255,0.14))',
             whiteSpace: 'nowrap',
             fontWeight: '800'
         });
@@ -163,7 +177,7 @@ export class AeroLiveDomComposer {
             boxSizing: 'border-box',
             color: COLORS.GLASS_WHITE,
             caretColor: COLORS.AQUA,
-            background: 'rgba(5,27,43,0.68)',
+            background: 'rgba(5,27,43,0.4)',
             lineHeight: 'normal',
             whiteSpace: 'nowrap',
             textOverflow: 'ellipsis',
@@ -179,7 +193,8 @@ export class AeroLiveDomComposer {
             border: '0',
             outline: 'none',
             color: COLORS.INK,
-            background: COLORS.AQUA,
+            background: 'linear-gradient(180deg, #79F5E7 0%, #42E0D0 55%, #33CDBF 100%)',
+            boxShadow: `inset 0 1px 0 ${COLORS.GLASS_HIGHLIGHT || COLORS.GLASS_WHITE}, 0 0 18px rgba(66,224,208,0.2)`,
             fontWeight: '900',
             cursor: 'pointer'
         });
@@ -207,6 +222,6 @@ export class AeroLiveDomComposer {
                 this.onEscape();
             }
         });
-        document.body.appendChild(this.form);
+        this.host.appendChild(this.form);
     }
 }

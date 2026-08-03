@@ -1,5 +1,7 @@
 import { getData } from 'data/data_handler.js';
-import { measureText, render, renderGL } from 'display/display_system.js';
+import { getDisplaySystem, measureText, render } from 'display/display_system.js';
+import { OverlaySession } from 'overlay/_overlay_session.js';
+import { getSetting } from 'save/save_system.js';
 import { createFontString, truncateTextToWidth, wrapTextByCharacters } from 'util/font_util.js';
 
 const AERO_CONSTANTS = getData('AERO_LIVE_SCENE_CONSTANTS');
@@ -10,6 +12,14 @@ const HERO_FALLBACK_EXPRESSION = AERO_CONSTANTS.ASSET.HERO_FALLBACK_EXPRESSION |
 const FONT_FAMILY = 'Pretendard Variable, arial';
 const TOPIC_ACCENTS = Object.freeze(['#42E0D0', '#62D65B', '#FFD65A', '#FF8AA1', '#7B9CFF']);
 const CORE_COLORS = Object.freeze({ kick: COLORS.NEGATIVE, ignore: COLORS.NEUTRAL });
+const GLASS_STYLE = Object.freeze({
+    BLUR: 16,
+    TINT_STRENGTH: 0.2,
+    EDGE_STRENGTH: 0.5,
+    REFRACTION_STRENGTH: 0.012,
+    SHADOW_RADIUS: 18,
+    SHADOW_OFFSET_Y: 7
+});
 const EXPRESSION_LABELS = Object.freeze({
     default: '기본', idle: '기본', neutral: '평온',
     smile: '미소', laugh: '웃음', happy: '기쁨',
@@ -102,6 +112,10 @@ export class AeroLiveRenderer {
      */
     constructor() {
         this.destroyed = false;
+        this.glassSession = null;
+        this.glassSessionInitialized = false;
+        this.lastBlurTimeBucket = -1;
+        this.contentLayer = 'ui';
         this.heroReady = false;
         this.heroFailed = false;
         this.heroAssets = new Map();
@@ -187,6 +201,8 @@ export class AeroLiveRenderer {
     draw(context) {
         if (this.destroyed || !context) return;
         this.context = context;
+        this.#ensureGlassSession();
+        this.#syncGlassBackdropRevision();
         this.#backdrop();
         if (context.mode === 'topicSelect') this.#topics();
         else if (context.mode === 'results') this.#results();
@@ -211,7 +227,64 @@ export class AeroLiveRenderer {
         this.heroAssetRecords = [];
         this.heroReady = false;
         this.heroFailed = false;
+        this.glassSession?.release?.();
+        this.glassSession = null;
+        this.glassSessionInitialized = true;
+        this.lastBlurTimeBucket = -1;
+        this.contentLayer = 'ui';
         this.context = null;
+    }
+
+    /** 엔진 초기화가 끝난 첫 draw에서만 glass surface를 지연 생성합니다. @private */
+    #ensureGlassSession() {
+        if (this.glassSessionInitialized || this.destroyed) {
+            return;
+        }
+        this.glassSessionInitialized = true;
+        this.glassSession = this.#createGlassSession();
+        this.contentLayer = this.glassSession?.uiLayerId || 'ui';
+    }
+
+    /** 움직이는 배경을 10Hz bucket으로 양자화해 blur texture 갱신 비용을 제한합니다. @private */
+    #syncGlassBackdropRevision() {
+        if (!this.glassSession?.effectLayerId) {
+            return;
+        }
+        const bucket = Math.floor(Math.max(0, number(this.context?.elapsedVisualSeconds)) * 10);
+        if (bucket === this.lastBlurTimeBucket) {
+            return;
+        }
+        this.lastBlurTimeBucket = bucket;
+        this.glassSession.invalidateBlur();
+    }
+
+    /** 실제 backdrop을 샘플링하는 전용 glass/effect 및 선명한 2D content surface를 만듭니다. @private */
+    #createGlassSession() {
+        const displaySystem = typeof getDisplaySystem === 'function' ? getDisplaySystem() : null;
+        if (!displaySystem || typeof OverlaySession !== 'function') {
+            return null;
+        }
+        try {
+            return new OverlaySession({
+                displaySystem,
+                layer: 0,
+                dim: 0,
+                transparent: true,
+                glOverlay: false,
+                blurUpdateMode: 'dirty',
+                effects: {},
+                orderSequence: 0,
+                disableTransparency: typeof getSetting === 'function'
+                    && getSetting('disableTransparency') === true
+            });
+        } catch {
+            return null;
+        }
+    }
+
+    /** 유리 위의 텍스트와 장식을 전용 2D surface 또는 기본 UI 레이어에 그립니다. @private */
+    #drawContent(options) {
+        render(this.contentLayer || 'ui', options);
     }
 
     /** 로드된 표정 수를 기준으로 전체 에셋 상태를 갱신합니다. @private */
@@ -231,24 +304,145 @@ export class AeroLiveRenderer {
         return this.heroAssetRecords.find((record) => record.ready && record.image)?.image || null;
     }
 
-    /** 하늘, 수면색 띠와 장식 기포를 그립니다. @private */
+    /** 하늘, 구름, 수평선, 원근 그리드와 진주광 기포를 그립니다. @private */
     #backdrop() {
         const c = this.context;
-        renderGL('background', { shape: 'rect', x: c.WW / 2, y: c.WH / 2, w: c.WW, h: c.WH, fill: COLORS.SKY_TOP });
-        render('ui', { shape: 'rect', x: 0, y: 0, w: c.WW, h: c.WH, fill: COLORS.SKY_BOTTOM });
-        render('ui', { shape: 'rect', x: c.UIOffsetX, y: 0, w: c.UIWW, h: c.WH * 0.43, fill: COLORS.SKY_TOP, alpha: 0.78 });
-        render('ui', { shape: 'rect', x: c.UIOffsetX, y: c.WH * 0.43, w: c.UIWW, h: c.WH * 0.57, fill: COLORS.AQUA, alpha: 0.09 });
-        [[.07, .18, 25], [.17, .74, 42], [.68, .13, 34], [.84, .77, 50], [.94, .3, 22]].forEach((seed, index) => {
+        const backdropTime = Math.floor(Math.max(0, number(c.elapsedVisualSeconds)) * 10) / 10;
+        const horizonY = c.WH * .54;
+        const skyDeep = COLORS.SKY_DEEP || COLORS.SKY_TOP;
+        const skyMid = COLORS.SKY_MID || COLORS.AQUA;
+        const skyHaze = COLORS.SKY_HAZE || COLORS.SKY_BOTTOM;
+        render('ui', {
+            shape: 'rect', x: 0, y: 0, w: c.WW, h: c.WH,
+            fill: {
+                type: 'linear', x1: 0, y1: 0, x2: 0, y2: c.WH,
+                stops: [
+                    { offset: 0, color: skyDeep },
+                    { offset: .38, color: skyMid },
+                    { offset: .56, color: skyHaze },
+                    { offset: .7, color: '#9DEAF1' },
+                    { offset: 1, color: '#E9FDFF' }
+                ]
+            }
+        });
+
+        const sunX = c.UIOffsetX + c.UIWW * .83;
+        const sunY = c.WH * .14;
+        [110, 72, 38].forEach((radius, index) => {
+            render('ui', {
+                shape: 'circle', x: sunX, y: sunY, radius: radius * c.WH / 720,
+                fill: index === 2 ? '#FFFBD9' : COLORS.GLASS_WHITE,
+                alpha: [.08, .12, .72][index],
+                shadowBlur: index === 2 ? 30 : 0,
+                shadowColor: 'rgba(255,246,190,0.72)'
+            });
+        });
+
+        this.#cloud(c.UIOffsetX + c.UIWW * .13, c.WH * .16, c.UIWW * .00105, .8, 0);
+        this.#cloud(c.UIOffsetX + c.UIWW * .43, c.WH * .09, c.UIWW * .00082, .62, 1.7);
+        this.#cloud(c.UIOffsetX + c.UIWW * .72, c.WH * .29, c.UIWW * .00095, .72, 3.2);
+        this.#cloud(c.UIOffsetX + c.UIWW * .93, c.WH * .2, c.UIWW * .0007, .58, 4.4);
+
+        render('ui', {
+            shape: 'rect', x: c.UIOffsetX, y: horizonY - c.WH * .035, w: c.UIWW, h: c.WH * .11,
+            fill: {
+                type: 'linear', x1: 0, y1: horizonY - c.WH * .035, x2: 0, y2: horizonY + c.WH * .075,
+                stops: [
+                    { offset: 0, color: 'rgba(255,255,255,0)' },
+                    { offset: .44, color: 'rgba(255,255,255,0.72)' },
+                    { offset: .7, color: 'rgba(255,183,235,0.2)' },
+                    { offset: 1, color: 'rgba(255,255,255,0)' }
+                ]
+            }
+        });
+
+        const gridColor = COLORS.AERO_VIOLET || '#9A85FF';
+        for (let index = -8; index <= 8; index += 1) {
+            render('ui', {
+                shape: 'line',
+                x1: c.UIOffsetX + c.UIWW * .5,
+                y1: horizonY,
+                x2: c.UIOffsetX + c.UIWW * (.5 + index * .095),
+                y2: c.WH,
+                stroke: gridColor,
+                lineWidth: 1,
+                alpha: .075
+            });
+        }
+        for (let index = 1; index <= 8; index += 1) {
+            const progress = index / 8;
+            const y = horizonY + (c.WH - horizonY) * progress * progress;
+            render('ui', {
+                shape: 'line', x1: c.UIOffsetX, y1: y, x2: c.UIOffsetX + c.UIWW, y2: y,
+                stroke: gridColor, lineWidth: 1, alpha: .07 + progress * .025
+            });
+        }
+
+        [[.06, .72, 27], [.18, .8, 42], [.39, .66, 19], [.66, .16, 31], [.82, .76, 48], [.95, .36, 23]].forEach((seed, index) => {
+            this.#backdropBubble(
+                c.UIOffsetX + c.UIWW * seed[0],
+                c.WH * seed[1] + Math.sin(backdropTime * .55 + index) * 7,
+                seed[2] * c.WH / 720,
+                index
+            );
+        });
+    }
+
+    /** 여러 원과 광택 띠로 흐릿한 구름 덩어리를 만듭니다. @private */
+    #cloud(x, y, scale, alpha, phase) {
+        const backdropTime = Math.floor(Math.max(0, number(this.context.elapsedVisualSeconds)) * 10) / 10;
+        const drift = Math.sin(backdropTime * .12 + phase) * 10;
+        const lobes = [[-70, 5, 38], [-28, -12, 52], [18, 0, 43], [58, 8, 31]];
+        lobes.forEach(([offsetX, offsetY, radius]) => {
             render('ui', {
                 shape: 'circle',
-                x: c.UIOffsetX + c.UIWW * seed[0],
-                y: c.WH * seed[1] + Math.sin(c.elapsedVisualSeconds * .6 + index) * 6,
-                radius: seed[2],
-                fill: COLORS.GLASS_WHITE,
-                stroke: COLORS.GLASS_BORDER,
-                lineWidth: 2,
-                alpha: .14
+                x: x + drift + offsetX * scale,
+                y: y + offsetY * scale,
+                radius: Math.max(8, radius * scale),
+                fill: COLORS.CLOUD_WHITE || COLORS.GLASS_WHITE,
+                alpha,
+                shadowBlur: Math.max(8, 18 * scale),
+                shadowColor: 'rgba(210,246,255,0.52)'
             });
+        });
+        render('ui', {
+            shape: 'roundRect',
+            x: x + drift - 82 * scale,
+            y: y + 5 * scale,
+            w: 164 * scale,
+            h: Math.max(14, 36 * scale),
+            radius: 999,
+            fill: COLORS.CLOUD_WHITE || COLORS.GLASS_WHITE,
+            alpha: alpha * .94
+        });
+    }
+
+    /** 투명 테두리와 작은 반사점이 있는 진주광 기포를 그립니다. @private */
+    #backdropBubble(x, y, radius, index) {
+        const pink = COLORS.AERO_PINK || '#FF86D7';
+        this.#backdropBubbleShell(x, y, radius, pink, index);
+        render('ui', {
+            shape: 'circle',
+            x: x - radius * .31,
+            y: y - radius * .34,
+            radius: Math.max(2, radius * .12),
+            fill: COLORS.GLASS_WHITE,
+            alpha: .76,
+            shadowBlur: Math.max(3, radius * .16),
+            shadowColor: COLORS.GLASS_WHITE
+        });
+    }
+
+    /** 기포 외피를 별도 메서드로 그려 테스트 가능한 배경 draw command를 유지합니다. @private */
+    #backdropBubbleShell(x, y, radius, accent, index) {
+        render('ui', {
+            shape: 'circle', x, y, radius,
+            fill: index % 2 === 0 ? 'rgba(235,254,255,0.11)' : 'rgba(255,225,250,0.1)',
+            stroke: index % 2 === 0 ? COLORS.GLASS_BORDER : accent,
+            lineWidth: Math.max(1.2, radius * .055),
+            alpha: .58,
+            shadowBlur: Math.max(4, radius * .18),
+            shadowColor: index % 2 === 0 ? 'rgba(71,216,255,0.26)' : 'rgba(255,134,215,0.24)'
         });
     }
 
@@ -256,15 +450,48 @@ export class AeroLiveRenderer {
     #topics() {
         const c = this.context;
         const center = c.UIOffsetX + c.UIWW / 2;
-        this.#label('AERO LIVE', center, c.WH * .095, this.#size(UI.TITLE_FONT_WH), COLORS.INK, { align: 'center', weight: 950 });
+        this.#label('AERO LIVE', center, c.WH * .095, this.#size(UI.TITLE_FONT_WH), COLORS.INK, {
+            align: 'center', weight: 950, shadowBlur: 16, shadowColor: 'rgba(66,224,208,0.48)'
+        });
 
         c.topicButtons.forEach((button, index) => {
             const topic = c.topicSummaries[index] || {};
             const rect = this.#buttonRect(button);
             const accent = TOPIC_ACCENTS[index % TOPIC_ACCENTS.length];
-            this.#panel(rect, { fill: COLORS.GLASS_FILL_STRONG, stroke: accent, lineWidth: 2 + button.hoverValue * 2 });
-            render('ui', { shape: 'roundRect', x: rect.x + rect.w * .07, y: rect.y + rect.h * .07, w: rect.w * .86, h: Math.max(7, rect.h * .055), radius: 999, fill: accent });
-            render('ui', { shape: 'circle', x: rect.x + rect.w * .16, y: rect.y + rect.h * .28, radius: Math.min(rect.w, rect.h) * .095, fill: accent });
+            this.#panel(rect, {
+                fill: COLORS.GLASS_FILL_STRONG,
+                stroke: accent,
+                edgeColor: accent,
+                tintColor: accent,
+                tintStrength: .08,
+                shadowColor: accent,
+                shadowRadius: 10 + button.hoverValue * 12,
+                lineWidth: 2 + button.hoverValue * 2
+            });
+            const accentBar = { x: rect.x + rect.w * .07, y: rect.y + rect.h * .07, w: rect.w * .86, h: Math.max(7, rect.h * .055) };
+            this.#drawContent({
+                shape: 'roundRect', ...accentBar, radius: 999,
+                fill: {
+                    type: 'linear', x1: accentBar.x, y1: 0, x2: accentBar.x + accentBar.w, y2: 0,
+                    stops: [
+                        { offset: 0, color: accent },
+                        { offset: .48, color: COLORS.GLASS_WHITE },
+                        { offset: 1, color: accent }
+                    ]
+                },
+                shadowBlur: 8 + button.hoverValue * 10,
+                shadowColor: accent
+            });
+            const numberRadius = Math.min(rect.w, rect.h) * .095;
+            this.#drawContent({
+                shape: 'circle', x: rect.x + rect.w * .16, y: rect.y + rect.h * .28, radius: numberRadius,
+                fill: accent, stroke: COLORS.GLASS_BORDER, lineWidth: 1.4,
+                shadowBlur: 10 + button.hoverValue * 10, shadowColor: accent
+            });
+            this.#drawContent({
+                shape: 'circle', x: rect.x + rect.w * .16 - numberRadius * .3, y: rect.y + rect.h * .28 - numberRadius * .32,
+                radius: Math.max(2, numberRadius * .14), fill: COLORS.GLASS_WHITE, alpha: .72
+            });
             this.#label(String(index + 1), rect.x + rect.w * .16, rect.y + rect.h * .28, this.#size(UI.SUBTITLE_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 950 });
             this.#label(topic.shortTitle || topic.title || `주제 ${index + 1}`, rect.x + rect.w * .54, rect.y + rect.h * .28, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { align: 'center', baseline: 'middle', weight: 950, maxWidth: rect.w * .58 });
             this.#wrapped(topic.concept || '특별 방송', rect.x + rect.w * .08, rect.y + rect.h * .47, rect.w * .84, this.#size(UI.BODY_FONT_WH), COLORS.INK, 2, 'center');
@@ -287,9 +514,9 @@ export class AeroLiveRenderer {
         const rect = c.layout.topBar;
         const m = c.snapshot?.metrics || {};
         const pad = c.layout.panelPad;
-        this.#panel(rect, { fill: COLORS.GLASS_FILL_STRONG });
+        this.#panel(rect, { fill: COLORS.GLASS_FILL_STRONG, tintStrength: .15 });
         const pill = { x: rect.x + pad * .6, y: rect.y + rect.h * .24, w: Math.max(64, rect.h * 1.25), h: rect.h * .52 };
-        render('ui', { shape: 'roundRect', ...pill, radius: 999, fill: COLORS.LIVE });
+        this.#drawContent({ shape: 'roundRect', ...pill, radius: 999, fill: COLORS.LIVE });
         this.#label('● LIVE', pill.x + pill.w / 2, pill.y + pill.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 950 });
         const titleX = pill.x + pill.w + pad * .7;
         this.#label(c.snapshot?.topic?.title || 'AERO LIVE', titleX, rect.y + rect.h * .34, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950, maxWidth: rect.w * .26 });
@@ -311,7 +538,7 @@ export class AeroLiveRenderer {
         const c = this.context;
         const rect = c.layout.left;
         const m = c.snapshot?.metrics || {};
-        this.#panel(rect, { fill: COLORS.GLASS_FILL, alpha: .92 });
+        this.#panel(rect, { fill: COLORS.GLASS_FILL, alpha: .92, tintStrength: .16 });
         this.#label('프로듀서 콘솔', rect.x + c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950 });
         this.#label(`강퇴 ${integer(c.snapshot?.resources?.kicksRemaining)}회`, rect.x + rect.w - c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SMALL_FONT_WH), COLORS.NEGATIVE, { align: 'right', baseline: 'middle', weight: 850 });
         this.#donation();
@@ -349,15 +576,48 @@ export class AeroLiveRenderer {
         const beat = c.snapshot?.currentBeat || {};
         const active = c.snapshot?.activeCoreChat || c.snapshot?.activeDonation;
         const heroImage = this.#heroImageForExpression(beat.expression);
-        this.#panel(c.layout.center, { fill: COLORS.GLASS_FILL, alpha: .89 });
-        render('ui', { shape: 'roundRect', ...stage, radius: this.#radius(), fill: heroImage ? COLORS.GLASS_WHITE : COLORS.DARK_GLASS });
+        this.#panel(c.layout.center, { fill: COLORS.GLASS_FILL, alpha: .89, tintColor: COLORS.AERO_PINK || COLORS.SKY_HAZE, tintStrength: .07 });
+        this.#drawContent({
+            shape: 'roundRect',
+            x: stage.x - 2, y: stage.y - 2, w: stage.w + 4, h: stage.h + 4,
+            radius: this.#radius() + 2,
+            fill: 'rgba(255,255,255,0.14)',
+            stroke: COLORS.AQUA,
+            lineWidth: 2,
+            shadowBlur: 18,
+            shadowColor: 'rgba(66,224,208,0.35)'
+        });
+        this.#drawContent({ shape: 'roundRect', ...stage, radius: this.#radius(), fill: heroImage ? COLORS.GLASS_WHITE : COLORS.DARK_GLASS });
         if (heroImage) this.#imageUpperBody(stage, heroImage);
         else {
-            render('ui', { shape: 'circle', x: stage.x + stage.w / 2, y: stage.y + stage.h * .49, radius: Math.min(stage.w, stage.h) * .22, fill: COLORS.AQUA, alpha: .45 });
+            this.#drawContent({ shape: 'circle', x: stage.x + stage.w / 2, y: stage.y + stage.h * .49, radius: Math.min(stage.w, stage.h) * .22, fill: COLORS.AQUA, alpha: .45 });
             this.#label('AERO', stage.x + stage.w / 2, stage.y + stage.h * .49, this.#size(UI.TITLE_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 950 });
         }
+        this.#drawContent({
+            shape: 'roundRect', ...stage, radius: this.#radius(), fill: false,
+            stroke: COLORS.GLASS_BORDER, lineWidth: 2
+        });
+        this.#drawContent({
+            shape: 'roundRect',
+            x: stage.x + stage.w * .08,
+            y: stage.y + stage.h - Math.max(4, stage.h * .012),
+            w: stage.w * .84,
+            h: Math.max(4, stage.h * .012),
+            radius: 999,
+            fill: {
+                type: 'linear', x1: stage.x, y1: 0, x2: stage.x + stage.w, y2: 0,
+                stops: [
+                    { offset: 0, color: COLORS.AQUA },
+                    { offset: .5, color: COLORS.GLASS_WHITE },
+                    { offset: 1, color: COLORS.AERO_PINK || '#FF86D7' }
+                ]
+            },
+            alpha: .84,
+            shadowBlur: 10,
+            shadowColor: COLORS.AERO_PINK || '#FF86D7'
+        });
         const tag = { x: stage.x + stage.w * .03, y: stage.y + stage.h * .035, w: stage.w * .31, h: Math.max(28, stage.h * .075) };
-        render('ui', { shape: 'roundRect', ...tag, radius: 999, fill: COLORS.DARK_GLASS, alpha: .84 });
+        this.#drawContent({ shape: 'roundRect', ...tag, radius: 999, fill: COLORS.DARK_GLASS, alpha: .84 });
         const expressionLabel = EXPRESSION_LABELS[beat.expression] || text(beat.expression || '기본', 14);
         const moodLabel = MOOD_LABELS[beat.mood] || text(beat.mood || '평온', 14);
         this.#label(`${expressionLabel} · ${moodLabel}`, tag.x + tag.w / 2, tag.y + tag.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 850, maxWidth: tag.w * .9 });
@@ -365,7 +625,13 @@ export class AeroLiveRenderer {
             const core = !!c.snapshot?.activeCoreChat;
             this.#timer({ x: stage.x + stage.w * .2, y: stage.y + stage.h * .91, w: stage.w * .6, h: Math.max(9, stage.h * .022) }, active.timeRemainingSeconds, core ? c.timerMaximums.core : c.timerMaximums.donation, core ? COLORS.NEGATIVE : COLORS.WARNING, core ? '핵심 채팅 결정' : '후원 디렉션');
         }
-        this.#panel(dialogue, { fill: COLORS.DARK_GLASS, stroke: COLORS.AQUA, lineWidth: 1.5 });
+        this.#panel(dialogue, {
+            fill: 'rgba(7,35,59,0.34)',
+            contentTint: 'rgba(5,30,51,0.7)',
+            stroke: COLORS.AQUA,
+            edgeColor: COLORS.AQUA,
+            lineWidth: 1.5
+        });
         this.#label(`BEAT ${number(beat.index) + 1} / ${Math.max(1, number(beat.total, 1))}`, dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .22, this.#size(UI.SMALL_FONT_WH), COLORS.AQUA, { baseline: 'middle', weight: 900 });
         if (c.heroResponseText) {
             this.#label('후원 대응', dialogue.x + dialogue.w * .23, dialogue.y + dialogue.h * .22, this.#size(UI.SMALL_FONT_WH), COLORS.WARNING, { baseline: 'middle', weight: 900 });
@@ -378,7 +644,7 @@ export class AeroLiveRenderer {
         const c = this.context;
         const rect = c.layout.right;
         const resources = c.snapshot?.resources || {};
-        this.#panel(rect, { fill: COLORS.GLASS_FILL, alpha: .92 });
+        this.#panel(rect, { fill: COLORS.GLASS_FILL, alpha: .92, tintStrength: .16 });
         this.#label('실시간 채팅', rect.x + c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950 });
         this.#label(`자유 채팅 ${integer(resources.playerMessagesRemaining)}회`, rect.x + rect.w - c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SMALL_FONT_WH), COLORS.DEEP_BLUE, { align: 'right', baseline: 'middle', weight: 850 });
         this.#chats();
@@ -399,7 +665,7 @@ export class AeroLiveRenderer {
         const rect = c.layout.chatArea;
         const count = Math.max(1, Math.floor(number(UI.CHAT_VISIBLE_COUNT, 9)));
         const chats = Array.isArray(c.snapshot?.chats) ? c.snapshot.chats.slice(-count) : [];
-        render('ui', { shape: 'roundRect', ...rect, radius: this.#radius() * .7, fill: 'rgba(245,254,255,0.48)', stroke: COLORS.GLASS_BORDER, lineWidth: 1 });
+        this.#drawContent({ shape: 'roundRect', ...rect, radius: this.#radius() * .7, fill: 'rgba(245,254,255,0.34)', stroke: COLORS.GLASS_BORDER, lineWidth: 1 });
         if (!chats.length) {
             this.#label('시청자 채팅을 기다리는 중입니다.', rect.x + rect.w / 2, rect.y + rect.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'center', baseline: 'middle', weight: 700 });
             return;
@@ -410,8 +676,8 @@ export class AeroLiveRenderer {
             const row = { x: rect.x + 3, y: startY + index * rowH, w: rect.w - 6, h: rowH - 2 };
             const accent = chat.sentiment === 'positive' ? COLORS.POSITIVE : chat.sentiment === 'negative' ? COLORS.NEGATIVE : COLORS.NEUTRAL;
             const player = String(chat.source || '').includes('player');
-            render('ui', { shape: 'roundRect', ...row, radius: Math.max(4, row.h * .2), fill: player ? 'rgba(66,224,208,0.18)' : COLORS.GLASS_FILL_STRONG, alpha: .84 });
-            render('ui', { shape: 'roundRect', x: row.x + 5, y: row.y + row.h * .25, w: 5, h: row.h * .5, radius: 999, fill: accent });
+            this.#drawContent({ shape: 'roundRect', ...row, radius: Math.max(4, row.h * .2), fill: player ? 'rgba(66,224,208,0.18)' : COLORS.GLASS_FILL_STRONG, alpha: .84 });
+            this.#drawContent({ shape: 'roundRect', x: row.x + 5, y: row.y + row.h * .25, w: 5, h: row.h * .5, radius: 999, fill: accent });
             const authorW = Math.min(row.w * .31, 96);
             this.#label(chat.author || chat.viewer_id || 'viewer', row.x + 15, row.y + row.h / 2, this.#size(UI.SMALL_FONT_WH), player ? COLORS.DEEP_BLUE : accent, { baseline: 'middle', weight: 900, maxWidth: authorW - 18 });
             this.#label(chat.text, row.x + authorW, row.y + row.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.INK, { baseline: 'middle', weight: player ? 800 : 650, maxWidth: row.w - authorW - 10, clipRect: row });
@@ -456,8 +722,8 @@ export class AeroLiveRenderer {
         const outer = { x: c.UIOffsetX + c.UIWW * .065, y: c.WH * .19, w: c.UIWW * .87, h: c.WH * .58 };
         const left = { x: outer.x, y: outer.y, w: outer.w * .39, h: outer.h };
         const right = { x: left.x + left.w + c.layout.gap, y: outer.y, w: outer.w - left.w - c.layout.gap, h: outer.h };
-        this.#panel(left, { fill: COLORS.GLASS_FILL_STRONG });
-        this.#panel(right, { fill: COLORS.GLASS_FILL_STRONG });
+        this.#panel(left, { fill: COLORS.GLASS_FILL_STRONG, tintStrength: .14 });
+        this.#panel(right, { fill: COLORS.GLASS_FILL_STRONG, tintColor: COLORS.AERO_PINK || COLORS.SKY_HAZE, tintStrength: .06 });
         const leftX = left.x + left.w * .065;
         const leftW = left.w * .87;
         this.#label('시청자와 최종 지표', leftX, left.y + left.h * .07, this.#size(UI.SUBTITLE_FONT_WH), COLORS.DEEP_BLUE, { baseline: 'middle', weight: 950 });
@@ -531,7 +797,7 @@ export class AeroLiveRenderer {
             : [];
         while (intents.length < 3) intents.push('미사용');
         const intentRect = { x: rightX, y: right.y + right.h * .45, w: rightW, h: right.h * .105 };
-        render('ui', { shape: 'roundRect', ...intentRect, radius: this.#radius() * .5, fill: 'rgba(66,224,208,0.13)' });
+        this.#drawContent({ shape: 'roundRect', ...intentRect, radius: this.#radius() * .5, fill: 'rgba(66,224,208,0.13)' });
         this.#label(`자유 채팅 판정 · ${integer(playerMessages.used ?? s.playerMessagesUsed)}/3회`, intentRect.x + intentRect.w * .035, intentRect.y + intentRect.h * .25, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { baseline: 'middle', weight: 850 });
         this.#label(intents.map((intent, index) => `${index + 1} ${intent}`).join('  ·  '), intentRect.x + intentRect.w * .035, intentRect.y + intentRect.h * .68, this.#size(UI.BODY_FONT_WH), COLORS.DEEP_BLUE, { baseline: 'middle', weight: 900, maxWidth: intentRect.w * .93 });
 
@@ -543,7 +809,7 @@ export class AeroLiveRenderer {
             this.#label(`• ${line}`, rightX, right.y + right.h * .625 + index * momentFontSize * 1.28, momentFontSize, COLORS.INK, { weight: 750, maxWidth: rightW });
         });
         const heroRect = { x: rightX, y: right.y + right.h * .785, w: rightW, h: right.h * .15 };
-        render('ui', { shape: 'roundRect', ...heroRect, radius: this.#radius() * .55, fill: COLORS.DARK_GLASS });
+        this.#drawContent({ shape: 'roundRect', ...heroRect, radius: this.#radius() * .55, fill: COLORS.DARK_GLASS });
         this.#label('히로인의 한마디', heroRect.x + heroRect.w * .035, heroRect.y + heroRect.h * .25, this.#size(UI.SMALL_FONT_WH), COLORS.AQUA, { baseline: 'middle', weight: 900 });
         this.#wrapped(result.heroComment || '다음 방송에서도 함께해 줘.', heroRect.x + heroRect.w * .035, heroRect.y + heroRect.h * .47, heroRect.w * .93, this.#size(UI.BODY_FONT_WH), COLORS.GLASS_WHITE, 2);
         this.#button(c.resultRestartButton, '같은 주제 재방송', COLORS.DEEP_BLUE, COLORS.GLASS_BORDER, COLORS.GLASS_WHITE);
@@ -552,7 +818,7 @@ export class AeroLiveRenderer {
 
     /** 결과 화면의 짧은 라벨과 값을 한 행 또는 카드로 그립니다. @private */
     #resultStat(label, value, rect, color = COLORS.DEEP_BLUE, stacked = false) {
-        render('ui', { shape: 'roundRect', ...rect, radius: this.#radius() * .45, fill: 'rgba(95,203,255,0.13)' });
+        this.#drawContent({ shape: 'roundRect', ...rect, radius: this.#radius() * .45, fill: 'rgba(95,203,255,0.13)' });
         if (stacked) {
             this.#label(label, rect.x + rect.w / 2, rect.y + rect.h * .28, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'center', baseline: 'middle', weight: 750, maxWidth: rect.w * .9 });
             this.#label(value, rect.x + rect.w / 2, rect.y + rect.h * .68, this.#size(UI.METRIC_FONT_WH), color, { align: 'center', baseline: 'middle', weight: 950, maxWidth: rect.w * .9 });
@@ -565,9 +831,17 @@ export class AeroLiveRenderer {
     /** 조기 종료 확인 모달을 그립니다. @private */
     #modal() {
         const c = this.context;
-        render('ui', { shape: 'rect', x: 0, y: 0, w: c.WW, h: c.WH, fill: COLORS.DARK_GLASS, alpha: .78 });
+        this.#drawContent({ shape: 'rect', x: 0, y: 0, w: c.WW, h: c.WH, fill: 'rgba(8,39,61,0.56)', alpha: .78 });
         const rect = c.layout.modal;
-        this.#panel(rect, { fill: COLORS.GLASS_FILL_STRONG, stroke: COLORS.WARNING, lineWidth: 2.5 });
+        this.#panel(rect, {
+            fill: COLORS.GLASS_FILL_STRONG,
+            stroke: COLORS.WARNING,
+            edgeColor: COLORS.WARNING,
+            shadowColor: COLORS.WARNING,
+            shadowRadius: 24,
+            contentOnly: true,
+            lineWidth: 2.5
+        });
         this.#label('방송을 조기 종료할까요?', rect.x + rect.w / 2, rect.y + rect.h * .2, this.#size(UI.SUBTITLE_FONT_WH) * 1.15, COLORS.INK, { align: 'center', weight: 950 });
         this.#wrapped('현재 기록으로 결과를 확정하고 진행 중인 이벤트를 종료합니다.', rect.x + rect.w * .12, rect.y + rect.h * .36, rect.w * .76, this.#size(UI.BODY_FONT_WH), COLORS.INK_MUTED, 2, 'center');
         this.#label('ESC 취소', rect.x + rect.w * .91, rect.y + rect.h * .075, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'right', weight: 750 });
@@ -583,7 +857,7 @@ export class AeroLiveRenderer {
         const width = Math.min(c.UIWW * .66, Math.max(260, measureText(c.toastText, font) + 54));
         const rect = { x: c.UIOffsetX + (c.UIWW - width) / 2, y: c.mode === 'live' ? c.WH * .91 : c.WH * .89, w: width, h: Math.max(42, c.WH * .062) };
         const alpha = clamp(c.toastSecondsRemaining * 2, 0, 1);
-        render('ui', { shape: 'roundRect', ...rect, radius: 999, fill: COLORS.DARK_GLASS, stroke: COLORS.AQUA, lineWidth: 1.5, alpha });
+        this.#drawContent({ shape: 'roundRect', ...rect, radius: 999, fill: COLORS.DARK_GLASS, stroke: COLORS.AQUA, lineWidth: 1.5, alpha });
         this.#label(c.toastText, rect.x + rect.w / 2, rect.y + rect.h / 2, this.#size(UI.BODY_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 850, maxWidth: rect.w - 36, alpha });
     }
 
@@ -595,8 +869,32 @@ export class AeroLiveRenderer {
         this.#label(label, rect.x, rect.y + rect.h * .28, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { baseline: 'middle', weight: 800 });
         this.#label(shown, rect.x + rect.w, rect.y + rect.h * .28, this.#size(UI.METRIC_FONT_WH), color, { align: 'right', baseline: 'middle', weight: 950 });
         const bar = { x: rect.x, y: rect.y + rect.h * .58, w: rect.w, h: Math.max(6, rect.h * .16) };
-        render('ui', { shape: 'roundRect', ...bar, radius: 999, fill: COLORS.DARK_GLASS_SOFT, alpha: .36 });
-        if (percent > 0) render('ui', { shape: 'roundRect', x: bar.x, y: bar.y, w: Math.max(bar.h, bar.w * percent / 100), h: bar.h, radius: 999, fill: color });
+        this.#drawContent({
+            shape: 'roundRect', ...bar, radius: 999,
+            fill: {
+                type: 'linear', x1: 0, y1: bar.y, x2: 0, y2: bar.y + bar.h,
+                stops: [
+                    { offset: 0, color: 'rgba(5,37,59,0.62)' },
+                    { offset: 1, color: 'rgba(22,91,119,0.28)' }
+                ]
+            },
+            stroke: 'rgba(255,255,255,0.42)', lineWidth: 1, alpha: .72
+        });
+        if (percent > 0) {
+            const fillW = Math.max(bar.h, bar.w * percent / 100);
+            this.#drawContent({
+                shape: 'roundRect', x: bar.x, y: bar.y, w: fillW, h: bar.h, radius: 999,
+                fill: color, shadowBlur: 8, shadowColor: color
+            });
+            this.#drawContent({
+                shape: 'roundRect', x: bar.x + 1, y: bar.y + 1, w: Math.max(1, fillW - 2), h: Math.max(1, bar.h * .34), radius: 999,
+                fill: COLORS.GLASS_WHITE, alpha: .38
+            });
+            this.#drawContent({
+                shape: 'circle', x: bar.x + fillW - bar.h * .48, y: bar.y + bar.h * .5,
+                radius: Math.max(2, bar.h * .23), fill: COLORS.GLASS_WHITE, alpha: .7
+            });
+        }
     }
 
     /** 가독성 높은 수평 카운트다운을 그립니다. @private */
@@ -604,8 +902,21 @@ export class AeroLiveRenderer {
         const left = Math.max(0, number(remaining));
         const max = Math.max(.001, number(maximum, left || 1));
         const ratio = clamp(left / max, 0, 1);
-        render('ui', { shape: 'roundRect', ...rect, radius: 999, fill: COLORS.DARK_GLASS_SOFT, alpha: .7 });
-        if (ratio > 0) render('ui', { shape: 'roundRect', x: rect.x, y: rect.y, w: Math.max(rect.h, rect.w * ratio), h: rect.h, radius: 999, fill: color });
+        this.#drawContent({
+            shape: 'roundRect', ...rect, radius: 999,
+            fill: COLORS.DARK_GLASS_SOFT, stroke: 'rgba(255,255,255,0.34)', lineWidth: 1, alpha: .72
+        });
+        if (ratio > 0) {
+            const fillW = Math.max(rect.h, rect.w * ratio);
+            this.#drawContent({
+                shape: 'roundRect', x: rect.x, y: rect.y, w: fillW, h: rect.h, radius: 999,
+                fill: color, shadowBlur: 9, shadowColor: color
+            });
+            this.#drawContent({
+                shape: 'roundRect', x: rect.x + 1, y: rect.y + 1, w: Math.max(1, fillW - 2), h: Math.max(1, rect.h * .3), radius: 999,
+                fill: COLORS.GLASS_WHITE, alpha: .4
+            });
+        }
         this.#label(`${label} · ${Math.ceil(left)}초${this.context.inputClassificationPending ? ' · PAUSE' : ''}`, rect.x + rect.w, rect.y - Math.max(5, rect.h * .55), this.#size(UI.SMALL_FONT_WH), labelColor, { align: 'right', baseline: 'bottom', weight: 900, maxWidth: rect.w });
     }
 
@@ -613,16 +924,109 @@ export class AeroLiveRenderer {
     #button(button, label, fill, stroke, textColor, disabled = false) {
         if (!button?.visible) return;
         const rect = this.#buttonRect(button);
-        render('ui', { shape: 'roundRect', ...rect, radius: Math.min(this.#radius() * .65, rect.h * .32), fill: disabled ? COLORS.DARK_GLASS_SOFT : fill, stroke, lineWidth: 1.5, alpha: disabled ? .45 : .96 });
-        if (!disabled && button.hoverValue > .01) render('ui', { shape: 'roundRect', ...rect, radius: Math.min(this.#radius() * .65, rect.h * .32), fill: COLORS.GLASS_WHITE, alpha: button.hoverValue * .16 });
+        const radius = Math.min(this.#radius() * .65, rect.h * .32);
+        const hover = disabled ? 0 : clamp(button.hoverValue, 0, 1);
+        this.#drawContent({
+            shape: 'roundRect', ...rect, radius,
+            fill: disabled ? COLORS.DARK_GLASS_SOFT : fill,
+            stroke,
+            lineWidth: 1.5,
+            alpha: disabled ? .45 : .96,
+            shadowBlur: disabled ? 0 : 4 + hover * 12,
+            shadowColor: stroke
+        });
+        if (!disabled) {
+            this.#drawContent({
+                shape: 'roundRect',
+                x: rect.x + 2,
+                y: rect.y + 2,
+                w: Math.max(1, rect.w - 4),
+                h: Math.max(2, rect.h * .38),
+                radius: Math.max(2, radius - 2),
+                fill: {
+                    type: 'linear', x1: 0, y1: rect.y, x2: 0, y2: rect.y + rect.h * .38,
+                    stops: [
+                        { offset: 0, color: 'rgba(255,255,255,0.68)' },
+                        { offset: 1, color: 'rgba(255,255,255,0)' }
+                    ]
+                },
+                alpha: .48 + hover * .22
+            });
+        }
         this.#label(label, rect.x + rect.w / 2, rect.y + rect.h / 2, Math.min(this.#size(UI.BODY_FONT_WH), rect.h * .34), textColor, { align: 'center', baseline: 'middle', weight: 900, maxWidth: rect.w * .9, alpha: disabled ? .55 : 1 });
     }
 
     /** 유리 패널을 그립니다. @private */
     #panel(rect, style = {}) {
         const radius = this.#radius();
-        render('ui', { shape: 'roundRect', x: rect.x + 3, y: rect.y + 5, w: rect.w, h: rect.h, radius, fill: COLORS.GLASS_SHADOW, alpha: .48 });
-        render('ui', { shape: 'roundRect', ...rect, radius, fill: style.fill || COLORS.GLASS_FILL, stroke: style.stroke || COLORS.GLASS_BORDER, lineWidth: style.lineWidth || 1.2, alpha: style.alpha ?? .96 });
+        const alpha = style.alpha ?? .96;
+        const fill = style.fill || COLORS.GLASS_FILL;
+        const stroke = style.stroke || COLORS.GLASS_BORDER;
+        const lineWidth = style.lineWidth || 1.2;
+        if (!style.contentOnly && this.glassSession?.effectLayerId) {
+            this.glassSession.renderGlassPanel({
+                x: rect.x,
+                y: rect.y,
+                w: rect.w,
+                h: rect.h,
+                radius,
+                blur: GLASS_STYLE.BLUR,
+                fill,
+                stroke,
+                lineWidth,
+                tintColor: style.tintColor || COLORS.SKY_HAZE || COLORS.GLASS_WHITE,
+                edgeColor: style.edgeColor || COLORS.GLASS_HIGHLIGHT || COLORS.GLASS_WHITE,
+                tintStrength: style.tintStrength ?? GLASS_STYLE.TINT_STRENGTH,
+                edgeStrength: style.edgeStrength ?? GLASS_STYLE.EDGE_STRENGTH,
+                refractionStrength: style.refractionStrength ?? GLASS_STYLE.REFRACTION_STRENGTH,
+                shadowRadius: style.shadowRadius ?? GLASS_STYLE.SHADOW_RADIUS,
+                shadowColor: style.shadowColor || COLORS.GLASS_SHADOW,
+                shadowOffsetY: style.shadowOffsetY ?? GLASS_STYLE.SHADOW_OFFSET_Y,
+                alpha
+            });
+        } else {
+            this.#drawContent({
+                shape: 'roundRect', ...rect, radius, fill, stroke, lineWidth, alpha,
+                shadowBlur: style.shadowRadius ?? GLASS_STYLE.SHADOW_RADIUS,
+                shadowColor: style.shadowColor || COLORS.GLASS_SHADOW
+            });
+        }
+        if (style.contentTint) {
+            this.#drawContent({
+                shape: 'roundRect', ...rect, radius,
+                fill: style.contentTint,
+                alpha
+            });
+        }
+        const inset = Math.max(2, lineWidth + 1);
+        this.#drawContent({
+            shape: 'roundRect',
+            x: rect.x + inset,
+            y: rect.y + inset,
+            w: Math.max(1, rect.w - inset * 2),
+            h: Math.max(1, rect.h - inset * 2),
+            radius: Math.max(2, radius - inset),
+            fill: false,
+            stroke: style.innerStroke || COLORS.GLASS_INNER_EDGE || 'rgba(104,224,255,0.28)',
+            lineWidth: 1,
+            alpha: alpha * .74
+        });
+        this.#drawContent({
+            shape: 'roundRect',
+            x: rect.x + inset + 1,
+            y: rect.y + inset + 1,
+            w: Math.max(1, rect.w - (inset + 1) * 2),
+            h: Math.max(4, Math.min(rect.h * .17, 34)),
+            radius: Math.max(2, radius - inset - 1),
+            fill: {
+                type: 'linear', x1: 0, y1: rect.y, x2: 0, y2: rect.y + Math.max(8, rect.h * .17),
+                stops: [
+                    { offset: 0, color: COLORS.GLASS_HIGHLIGHT || 'rgba(255,255,255,0.7)' },
+                    { offset: 1, color: 'rgba(255,255,255,0)' }
+                ]
+            },
+            alpha: alpha * .55
+        });
     }
 
     /** 한 줄 Canvas 텍스트를 폭에 맞춰 그립니다. @private */
@@ -632,9 +1036,11 @@ export class AeroLiveRenderer {
         const shown = Number.isFinite(options.maxWidth)
             ? truncateTextToWidth(safe, { maxWidth: options.maxWidth, measureWidth: (candidate) => measureText(candidate, font), ellipsis: '…' })
             : safe;
-        render('ui', {
+        this.#drawContent({
             shape: 'text', text: shown, x, y, font, fill: color, align: options.align || 'left',
-            baseline: options.baseline || 'top', alpha: options.alpha ?? 1, clipRect: options.clipRect
+            baseline: options.baseline || 'top', alpha: options.alpha ?? 1, clipRect: options.clipRect,
+            shadowBlur: options.shadowBlur,
+            shadowColor: options.shadowColor
         });
     }
 
@@ -659,7 +1065,7 @@ export class AeroLiveRenderer {
             cropW = Math.min(sourceW, cropH * targetAspect);
         }
         const cropX = (sourceW - cropW) / 2;
-        render('ui', {
+        this.#drawContent({
             shape: 'image',
             image,
             sx: cropX,
