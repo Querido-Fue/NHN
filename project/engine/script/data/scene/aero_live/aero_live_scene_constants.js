@@ -100,10 +100,11 @@ export const AERO_LIVE_SCENE_CONSTANTS = Object.freeze({
         MASK_LABEL: '가면 계정'
     }),
     INSTRUCTIONS: Object.freeze([
-        Object.freeze({ id: 'positive', label: '긍정', shortLabel: '긍정' }),
-        Object.freeze({ id: 'negative', label: '부정', shortLabel: '부정' }),
-        Object.freeze({ id: 'ignore', label: '무시', shortLabel: '무시' }),
-        Object.freeze({ id: 'redirect', label: '화제 전환', shortLabel: '전환' }),
-        Object.freeze({ id: 'empathy', label: '공감', shortLabel: '공감' })
+        Object.freeze({ id: 'accept', label: '수락', shortLabel: '수락' }),
+        Object.freeze({ id: 'deny', label: '부정', shortLabel: '부정' }),
+        Object.freeze({ id: 'joy', label: '기쁨', shortLabel: '기쁨' }),
+        Object.freeze({ id: 'anger', label: '분노', shortLabel: '분노' }),
+        Object.freeze({ id: 'sadness', label: '슬픔', shortLabel: '슬픔' }),
+        Object.freeze({ id: 'fun', label: '즐거움', shortLabel: '즐거움' })
     ])
 });

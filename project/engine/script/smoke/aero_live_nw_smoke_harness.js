@@ -4,6 +4,7 @@ const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,47}$/u;
 const CAPTURE_WIDTH = 1280;
 const CAPTURE_HEIGHT = 720;
 const WAIT_TIMEOUT_MS = 15000;
+const MAX_CORE_FAST_FORWARD_TICKS = 60 * 210;
 const errors = [];
 const warnings = [];
 const nodeRequire = window.require;
@@ -448,12 +449,49 @@ async function runSmoke() {
 
         scene.snapshot = scene.runtime.startBroadcast('game');
         scene.mode = 'live';
-        for (let tick = 0; tick < 130; tick += 1) {
+        let liveFixedTicks = 0;
+        while (liveFixedTicks < MAX_CORE_FAST_FORWARD_TICKS
+            && scene.snapshot?.status === 'live'
+            && !scene.snapshot?.activeCoreChat) {
             scene.fixedUpdate();
+            liveFixedTicks += 1;
         }
         await Promise.resolve();
+        scene.update();
         const liveFallbackChatCount = scene.snapshot?.chats
             ?.filter((chat) => chat.source === 'fallback').length || 0;
+        const activeCoreChatId = String(
+            scene.snapshot?.activeCoreChat?.coreChatId
+            || scene.snapshot?.activeCoreChat?.id
+            || ''
+        );
+        const inlineCoreChat = scene.snapshot?.chats?.find(
+            (chat) => String(chat?.coreChatId || '') === activeCoreChatId
+        ) || null;
+        const coreRowButton = scene.coreRowButtons?.find(
+            (button) => button.visible
+                && String(button.aeroData?.coreChatId || '') === activeCoreChatId
+        );
+        if (!activeCoreChatId || !inlineCoreChat || !coreRowButton) {
+            throw new Error('NW_SMOKE_INLINE_CORE_NOT_READY');
+        }
+        coreRowButton.onClick();
+        scene.update();
+        const visibleCoreActionIds = scene.coreButtons
+            ?.filter((button) => button.visible)
+            .map((button) => String(button.aeroData?.id || '')) || [];
+        const liveInteraction = {
+            fixedTicks: liveFixedTicks,
+            inlineCoreChatPresent: inlineCoreChat.kind === 'core'
+                && inlineCoreChat.source === 'core'
+                && inlineCoreChat.active === true,
+            inlineTimerSeconds: numberOr(inlineCoreChat.timeRemainingSeconds, -1),
+            activeCoreChatId,
+            selectedCoreChatId: String(scene.selectedCoreChatId || ''),
+            visibleCoreRowButtonCount: scene.coreRowButtons
+                ?.filter((button) => button.visible).length || 0,
+            visibleCoreActionIds
+        };
         captures.push(await captureState({
             game, scene, nativeWindow, paths, order: '02', name: 'live'
         }));
@@ -494,6 +532,7 @@ async function runSmoke() {
             heroAssets: scene.renderer?.getHeroAssetStatus?.() || null,
             liveState: {
                 fallbackChatCount: liveFallbackChatCount,
+                ...liveInteraction,
                 earlyEndAccepted: earlyEnd?.accepted === true
             },
             result: {
@@ -513,6 +552,13 @@ async function runSmoke() {
             && report.heroAssets?.failedCount === 0
             && isValidCaptureViewport(report.viewport.width, report.viewport.height)
             && report.liveState.fallbackChatCount > 0
+            && report.liveState.fixedTicks > 0
+            && report.liveState.fixedTicks < MAX_CORE_FAST_FORWARD_TICKS
+            && report.liveState.inlineCoreChatPresent
+            && report.liveState.inlineTimerSeconds > 0
+            && report.liveState.activeCoreChatId === report.liveState.selectedCoreChatId
+            && report.liveState.visibleCoreRowButtonCount === 1
+            && JSON.stringify(report.liveState.visibleCoreActionIds) === JSON.stringify(['kick', 'delete', 'ignore'])
             && report.liveState.earlyEndAccepted
             && report.result.endType === 'early'
             && report.result.hasResult

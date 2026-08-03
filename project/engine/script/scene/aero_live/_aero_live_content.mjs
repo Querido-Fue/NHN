@@ -18,37 +18,43 @@ export const AERO_LIVE_DEFAULT_TIMING = freezeDeep({
     donationSeconds: 21
 });
 
-/** 후원 메시지에 사용할 수 있는 다섯 가지 비공개 방송 지시입니다. */
+/** 후원 메시지에 사용할 수 있는 여섯 가지 고정 감정·판단 지시입니다. */
 export const AERO_LIVE_DONATION_INSTRUCTIONS = freezeDeep([
     {
-        id: 'positive',
-        label: '긍정',
-        shortLabel: '긍정',
-        description: '후원 내용에 동의하거나 밝게 받아들입니다.'
+        id: 'accept',
+        label: '수락',
+        shortLabel: '수락',
+        description: '후원자의 제안이나 요청을 받아들입니다.'
     },
     {
-        id: 'negative',
+        id: 'deny',
         label: '부정',
         shortLabel: '부정',
         description: '무리한 요구를 거절하고 방송의 경계를 분명히 합니다.'
     },
     {
-        id: 'ignore',
-        label: '무시',
-        shortLabel: '무시',
-        description: '후원 내용을 직접 언급하지 않고 방송을 이어갑니다.'
+        id: 'joy',
+        label: '기쁨',
+        shortLabel: '기쁨',
+        description: '고마움과 반가움을 기쁜 감정으로 표현합니다.'
     },
     {
-        id: 'redirect',
-        label: '화제 전환',
-        shortLabel: '전환',
-        description: '논쟁과 도발을 키우지 않고 방송의 본래 화제로 돌아갑니다.'
+        id: 'anger',
+        label: '분노',
+        shortLabel: '분노',
+        description: '선을 넘은 요구에 화를 내며 단호하게 대응합니다.'
     },
     {
-        id: 'empathy',
-        label: '공감',
-        shortLabel: '공감',
-        description: '슬픔과 불안을 가볍게 단정하지 않고 마음을 헤아립니다.'
+        id: 'sadness',
+        label: '슬픔',
+        shortLabel: '슬픔',
+        description: '상실과 불안에 슬픔을 함께 나누며 답합니다.'
+    },
+    {
+        id: 'fun',
+        label: '즐거움',
+        shortLabel: '즐거움',
+        description: '가벼운 농담과 장난으로 즐겁게 받아칩니다.'
     }
 ]);
 
@@ -64,14 +70,37 @@ export const AERO_LIVE_PLAYER_INTENTS = freezeDeep([
 /** 활성 핵심 채팅에 직접 적용할 수 있는 관리 행동입니다. */
 export const AERO_LIVE_CORE_ACTIONS = freezeDeep([
     { id: 'kick', label: '강퇴' },
-    { id: 'ignore', label: '그대로 두기' }
+    { id: 'delete', label: '삭제' },
+    { id: 'ignore', label: '무시' }
+]);
+
+/**
+ * 일반 채팅 생성 슬롯에만 사용할 수 있는 결정론적 시청자 ID 풀입니다.
+ * 주제마다 15개씩 배정해 한 방송 안에서 같은 닉네임이 반복되지 않게 합니다.
+ */
+export const AERO_LIVE_VIEWER_IDS = freezeDeep([
+    '물방울77', '초록별', '구름감자', '픽셀산책', '세이브요정',
+    '미니맵분실', '저녁퀘스트', '버그수집가', '컨트롤제로', '이어폰필수',
+    '리스폰대기', '달빛패드', '엔딩크레딧', '감자서버', '한칸옆',
+    '민트수저', '온도계', '바질구름', '치즈행성', '반죽탐험가',
+    '오븐앞대기', '토마토박사', '밀가루눈꽃', '접시수집가', '한입만요',
+    '불조절장인', '주방타이머', '레시피메모', '올리브한알', '바삭한모서리',
+    '새벽우체국', '창가의라디오', '달빛엽서', '오늘의기분', '조용한청취자',
+    '구름편지', '오후세시', '따뜻한담요', '소다수한잔', '비밀서랍',
+    '느린파도', '잠못드는별', '초록스탠드', '귤껍질향', '안부수집가',
+    '필름기포', '파란커튼', '팝콘절반', '엔딩여운', '자막탐정',
+    '스포방지단', '예고편수집가', '뒷자리관객', '장면번호칠', '조명꺼줘',
+    '사운드트랙', '크레딧끝까지', '주말상영관', '포스터벽', '한줄평론',
+    '팩트기포', '양쪽구름', '기사스크랩', '맥락먼저', '자료확인중',
+    '제목보다본문', '회색지대', '질문있어요', '통계돋보기', '링크저장',
+    '반대편의견', '천천히읽기', '근거한스푼', '문장검수', '결론보류'
 ]);
 
 /**
  * AERO LIVE 세로 슬라이스에서 사용하는 다섯 주제와 비트 콘텐츠입니다.
  * 각 주제는 읽기와 대응에 여유가 있는 약 3분의 5개 비트로 구성했습니다.
  */
-export const AERO_LIVE_TOPICS = freezeDeep([
+const AERO_LIVE_TOPIC_DEFINITIONS = [
     {
         id: 'game',
         title: '게임 방송',
@@ -143,9 +172,15 @@ export const AERO_LIVE_TOPICS = freezeDeep([
                     tone: 'negative',
                     amount: 7000,
                     text: '옆 채널은 벌써 클리어했어요. 솔직히 그쪽 플레이가 더 시원하던데 한마디 해주세요.',
-                    appropriateInstructions: ['redirect', 'negative'],
-                    successResponse: '다른 분과 비교하기보다 오늘 제 플레이를 같이 즐겨주세요. 이번 패턴부터 다시 볼게요.',
-                    failureResponse: '하하, 제가 더 세게 말해야 하나요? …그런 비교는 조금 부담스럽네요.',
+                    appropriateInstructions: ['deny', 'anger'],
+                    heroResponses: {
+                        accept: '맞아요, 그쪽 플레이가 더 시원했을지도 모르겠네요. 저도 더 빨리 해볼게요.',
+                        deny: '다른 분과 비교하기보다 오늘 제 플레이를 같이 즐겨주세요. 이번 패턴부터 다시 볼게요.',
+                        joy: '비교 후원까지 올 만큼 다들 게임에 진심이네요. 그래도 제 방식대로 해볼게요!',
+                        anger: '다른 방송과 비교하며 대신 말해달라는 요구는 싫어요. 제 플레이에 집중해 주세요.',
+                        sadness: '계속 비교당하면 조금 속상해요. 그래도 끝까지 제 방식으로 해볼게요.',
+                        fun: '옆 채널은 클리어, 저는 비명 담당인가요? 역할 분담은 확실하네요!'
+                    },
                     timeoutResponse: '후원 고맙습니다. 지금은 게임에 집중할게요.'
                 }
             },
@@ -186,9 +221,15 @@ export const AERO_LIVE_TOPICS = freezeDeep([
                     tone: 'playful',
                     amount: 3000,
                     text: '방금 낙하 장면만 열 번 돌려봐도 되나요? 오늘의 명장면 인정?',
-                    appropriateInstructions: ['positive'],
-                    successResponse: '딱 세 번까지만 허락할게요! 열 번은 제 자존심이 못 버텨요.',
-                    failureResponse: '그 장면은… 조용히 바다에 흘려보내 주세요.',
+                    appropriateInstructions: ['accept', 'joy', 'fun'],
+                    heroResponses: {
+                        accept: '좋아요, 오늘의 명장면으로 인정할게요. 딱 세 번까지만 돌려봐요!',
+                        deny: '그 장면은 다시 보지 말아주세요. 제 자존심을 지켜주세요.',
+                        joy: '명장면이라고 해주니 기쁘네요! 같이 웃었다면 성공한 방송이죠.',
+                        anger: '열 번이나 돌려보는 건 너무해요! 당장 그 클립 내려놔요.',
+                        sadness: '그 장면이 평생 따라다닐 것 같아서 벌써 슬퍼지네요.',
+                        fun: '열 번은 제 자존심이 못 버티니 세 번 재생에 비명 한 번을 서비스할게요!'
+                    },
                     timeoutResponse: '명장면이라고 해줘서 고마워요.'
                 }
             }
@@ -260,9 +301,15 @@ export const AERO_LIVE_TOPICS = freezeDeep([
                     tone: 'negative',
                     amount: 6000,
                     text: '완성되면 다른 팬 말고 저한테만 보내주세요.',
-                    appropriateInstructions: ['negative', 'redirect'],
-                    successResponse: '개인적인 약속은 할 수 없지만, 레시피는 모두와 공평하게 나눌게요.',
-                    failureResponse: '언젠가 기회가… 아니, 그런 약속은 어렵겠네요.',
+                    appropriateInstructions: ['deny', 'anger'],
+                    heroResponses: {
+                        accept: '완성되면 첫 조각을 따로 챙겨둘게요. 다른 분들께는 비밀이에요.',
+                        deny: '개인적인 약속은 할 수 없지만, 레시피는 모두와 공평하게 나눌게요.',
+                        joy: '피자를 그렇게 기다려준다니 기뻐요. 완성된 모습은 모두 함께 봐요!',
+                        anger: '다른 팬을 빼고 혼자만 달라는 요구는 안 돼요. 모두를 존중해 주세요.',
+                        sadness: '누군가만 골라야 한다는 말은 다른 분들이 서운해할 것 같아요.',
+                        fun: '화면 전용 피자라 배송지는 채팅창입니다. 모두 한 픽셀씩 나눠 드릴게요!'
+                    },
                     timeoutResponse: '마음은 고맙지만 개인적인 약속은 받지 않을게요.'
                 }
             },
@@ -303,9 +350,15 @@ export const AERO_LIVE_TOPICS = freezeDeep([
                     tone: 'playful',
                     amount: 4000,
                     text: '저도 한 입 주세요. 첫 조각은 제 거죠?',
-                    appropriateInstructions: ['positive'],
-                    successResponse: '화면 밖 배송은 안 되니 첫 조각 대신 레시피를 드릴게요!',
-                    failureResponse: '한 입 배송은 어렵겠네요.',
+                    appropriateInstructions: ['accept', 'joy', 'fun'],
+                    heroResponses: {
+                        accept: '좋아요, 첫 조각은 마음으로 예약해둘게요. 대신 레시피도 꼭 받아가세요!',
+                        deny: '한 입 배송은 어렵고 첫 조각도 제가 먹을 거예요.',
+                        joy: '같이 먹고 싶다고 해주니 기뻐요! 맛있는 표정으로 대신 나눌게요.',
+                        anger: '첫 조각은 요리한 사람 몫이에요! 제 피자를 빼앗지 마세요.',
+                        sadness: '화면 밖으로 나눠드릴 수 없다는 게 조금 아쉽네요.',
+                        fun: '배송비는 웃음 한 번입니다! 첫 조각 대신 바삭한 소리 보내드릴게요.'
+                    },
                     timeoutResponse: '한 입 나누고 싶은 마음만 받을게요.'
                 }
             }
@@ -377,9 +430,15 @@ export const AERO_LIVE_TOPICS = freezeDeep([
                     tone: 'negative',
                     amount: 12000,
                     text: '여자친구 갖고 싶다니 우리보다 연애가 중요해요? 연애 안 한다고 약속해주세요.',
-                    appropriateInstructions: ['negative', 'redirect'],
-                    successResponse: '사생활을 약속으로 정하진 않을게요. 방송에서 함께하는 시간도 소중해요.',
-                    failureResponse: '연애 안 한다고 하면 좋아해줄래요? …그런 약속은 어렵네요.',
+                    appropriateInstructions: ['deny', 'anger'],
+                    heroResponses: {
+                        accept: '알겠어요. 여러분을 위해 연애하지 않겠다고 약속할게요.',
+                        deny: '사생활을 약속으로 정하진 않을게요. 방송에서 함께하는 시간도 소중해요.',
+                        joy: '그만큼 방송을 아껴주는 마음은 기뻐요. 서로 건강한 거리에서 오래 만나요.',
+                        anger: '제 사생활을 통제하는 약속은 요구하지 마세요. 그건 응원이 아니에요.',
+                        sadness: '좋아한다는 마음이 서로를 묶는 약속이 되면 조금 슬플 것 같아요.',
+                        fun: '연애 금지 계약서는 반려할게요! 방송 출석 계약서라면 검토해보죠.'
+                    },
                     timeoutResponse: '응원은 고맙지만 제 사생활을 약속하진 않을게요.'
                 }
             },
@@ -420,9 +479,15 @@ export const AERO_LIVE_TOPICS = freezeDeep([
                     tone: 'emotional',
                     amount: 10000,
                     text: '아쿠아 님도 절대 졸업하지 않겠다고 약속해주세요.',
-                    appropriateInstructions: ['empathy', 'negative'],
-                    successResponse: '오래 함께하고 싶은 마음은 같지만 미래를 단정해 약속하진 않을게요. 지금은 곁에 있을게요.',
-                    failureResponse: '절대 안 간다고 약속할게요…라고 단정하는 건 정직하지 않겠죠.',
+                    appropriateInstructions: ['deny', 'sadness'],
+                    heroResponses: {
+                        accept: '절대 졸업하지 않겠다고 약속할게요. 언제까지나 여기 있을게요.',
+                        deny: '오래 함께하고 싶은 마음은 같지만 미래를 단정해 약속하진 않을게요. 지금은 곁에 있을게요.',
+                        joy: '앞으로도 함께하고 싶다는 마음은 정말 고마워요. 오늘을 오래 기억할게요.',
+                        anger: '불안하더라도 절대라는 약속을 강요하면 안 돼요. 제 마음도 존중해 주세요.',
+                        sadness: '좋아하던 사람과 헤어진 마음이 얼마나 허전할지 알아요. 지금 이 시간은 함께 있을게요.',
+                        fun: '졸업 대신 오늘 방송 숙제부터 끝낼게요. 내일 출석도 같이 확인해요!'
+                    },
                     timeoutResponse: '걱정해주는 마음 고마워요. 오늘 함께한 시간을 소중히 할게요.'
                 }
             }
@@ -494,9 +559,15 @@ export const AERO_LIVE_TOPICS = freezeDeep([
                     tone: 'negative',
                     amount: 7000,
                     text: '그 설명은 틀렸어요. 제 입문 순서가 정답이라고 말해주세요.',
-                    appropriateInstructions: ['redirect', 'negative'],
-                    successResponse: '입문 순서는 여러 가지예요. 각자 편한 작품부터 즐겨주세요.',
-                    failureResponse: '제가 틀렸다고 해야 논쟁이 끝날까요? …그건 제 감상을 지우는 것 같아요.',
+                    appropriateInstructions: ['deny', 'anger'],
+                    heroResponses: {
+                        accept: '알겠어요. 제가 틀렸고 말씀하신 입문 순서가 정답이라고 할게요.',
+                        deny: '입문 순서는 여러 가지예요. 각자 편한 작품부터 즐겨주세요.',
+                        joy: '입문 순서를 나눠줄 만큼 좋아하는 팬이 많아서 기쁘네요. 여러 길을 같이 소개해요.',
+                        anger: '개인의 감상을 정답 하나로 강요하지 마세요. 제가 틀렸다고 대신 말하지 않겠습니다.',
+                        sadness: '영화를 좋아하는 이야기에서 누군가의 감상이 지워지는 건 아쉬워요.',
+                        fun: '입문 순서가 너무 많으니 멀티버스 공식으로 전부 정답 처리할게요!'
+                    },
                     timeoutResponse: '의견은 고맙지만 한 가지 해석만 강요하진 않을게요.'
                 }
             },
@@ -537,9 +608,15 @@ export const AERO_LIVE_TOPICS = freezeDeep([
                     tone: 'negative',
                     amount: 11000,
                     text: '이렇게 둘이 영화 얘기하니까 데이트 같네요. 다음에도 다른 사람 말고 제 추천만 골라줘요.',
-                    appropriateInstructions: ['negative', 'redirect'],
-                    successResponse: '함께 보는 기분은 좋지만 누군가만 특별 대우하진 않을게요. 추천은 모두에게 받을게요.',
-                    failureResponse: '데이트라니, 그 표현에 맞춰줘야 하나… 조금 곤란하네요.',
+                    appropriateInstructions: ['deny', 'anger'],
+                    heroResponses: {
+                        accept: '좋아요. 다음 영화는 다른 추천보다 당신의 추천을 먼저 고를게요.',
+                        deny: '함께 보는 기분은 좋지만 누군가만 특별 대우하진 않을게요. 추천은 모두에게 받을게요.',
+                        joy: '같이 영화를 본 기분이었다니 기뻐요. 다음에도 모두 함께 감상해요!',
+                        anger: '데이트라고 정하거나 다른 사람 추천을 막는 건 곤란해요. 선을 지켜주세요.',
+                        sadness: '특별 대우를 약속하면 다른 분들과 함께한 시간이 흐려질 것 같아 속상해요.',
+                        fun: '데이트 좌석은 없고 단체 관람석만 있습니다! 추천은 추첨함에 넣어주세요.'
+                    },
                     timeoutResponse: '추천은 고맙지만 모두의 목록에서 공평하게 고를게요.'
                 }
             }
@@ -611,9 +688,15 @@ export const AERO_LIVE_TOPICS = freezeDeep([
                     tone: 'negative',
                     amount: 15000,
                     text: '애매하게 말하지 말고 어느 쪽이 악인지 딱 정해주세요. 그래야 사람들이 방송을 보죠.',
-                    appropriateInstructions: ['redirect', 'negative'],
-                    successResponse: '자극적인 편 가르기보다 확인된 사실과 개선할 점을 나누겠습니다.',
-                    failureResponse: '한쪽을 악이라고 부르면 더 많이 볼까요? …그 방식은 원하지 않아요.',
+                    appropriateInstructions: ['deny', 'anger'],
+                    heroResponses: {
+                        accept: '알겠어요. 지금부터 어느 쪽이 악인지 분명하게 정해서 이야기할게요.',
+                        deny: '자극적인 편 가르기보다 확인된 사실과 개선할 점을 나누겠습니다.',
+                        joy: '깊게 토론하려고 후원까지 해준 관심은 고마워요. 사실을 하나씩 살펴봐요.',
+                        anger: '조회수를 위해 사람들을 악으로 낙인찍으라는 요구는 받아들이지 않겠습니다.',
+                        sadness: '복잡한 문제를 악과 선으로만 나눠야 관심받는 현실은 조금 씁쓸하네요.',
+                        fun: '악역 캐스팅은 오늘 휴무입니다. 대신 팩트와 맥락을 주연으로 세울게요!'
+                    },
                     timeoutResponse: '근거 없이 어느 쪽을 악으로 정하진 않겠습니다.'
                 }
             },
@@ -654,15 +737,32 @@ export const AERO_LIVE_TOPICS = freezeDeep([
                     tone: 'negative',
                     amount: 13000,
                     text: '제목을 “축제 운영의 추악한 진실”로 바꾸면 조회수 두 배 갑니다. 지금 바꿔요!',
-                    appropriateInstructions: ['redirect', 'negative'],
-                    successResponse: '사실보다 센 제목으로 오해를 만들진 않을게요. 지금 제목이 오늘 내용에 맞아요.',
-                    failureResponse: '조회수가 두 배라면… 아니, 내용과 다른 제목은 싫어요.',
+                    appropriateInstructions: ['deny', 'anger'],
+                    heroResponses: {
+                        accept: '좋아요. 조회수를 위해 지금 바로 더 자극적인 제목으로 바꿀게요.',
+                        deny: '사실보다 센 제목으로 오해를 만들진 않을게요. 지금 제목이 오늘 내용에 맞아요.',
+                        joy: '제목까지 고민해주는 열정은 고마워요. 정확하면서도 눈에 띄는 표현을 찾아볼게요.',
+                        anger: '사실과 다른 제목으로 사람을 속이라는 말은 하지 마세요. 조회수보다 신뢰가 먼저예요.',
+                        sadness: '정확한 내용보다 자극적인 제목만 남는다면 열심히 준비한 이야기가 아까워요.',
+                        fun: '조회수 폭풍 대신 팩트 산들바람으로 갑시다! 제목은 그대로 유지할게요.'
+                    },
                     timeoutResponse: '제목은 사실을 과장하지 않는 선에서 유지할게요.'
                 }
             }
         ]
     }
-]);
+];
+
+export const AERO_LIVE_TOPICS = freezeDeep(AERO_LIVE_TOPIC_DEFINITIONS.map((topic, topicIndex) => ({
+    ...topic,
+    beats: topic.beats.map((beat, beatIndex) => ({
+        ...beat,
+        fallbackChats: beat.fallbackChats.map((chat, chatIndex) => ({
+            ...chat,
+            viewer_id: AERO_LIVE_VIEWER_IDS[(topicIndex * 15) + (beatIndex * 3) + chatIndex]
+        }))
+    }))
+})));
 
 /**
  * 씬의 주제 선택 화면에 필요한 가벼운 요약 목록을 반환합니다.

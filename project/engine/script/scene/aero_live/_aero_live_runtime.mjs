@@ -22,11 +22,12 @@ const VALID_PLAYER_INTENTS = new Set(AERO_LIVE_PLAYER_INTENTS.map((intent) => in
 const VALID_SENTIMENTS = new Set(['positive', 'negative', 'neutral']);
 
 const INSTRUCTION_EFFECTS = Object.freeze({
-    positive: Object.freeze({ viewers: 4, engagement: 4 }),
-    negative: Object.freeze({ stress: -2, affection: 2, viewers: -1, opinion: 4, engagement: -2 }),
-    ignore: Object.freeze({ engagement: -2 }),
-    redirect: Object.freeze({ stress: -1, opinion: 2, engagement: -2 }),
-    empathy: Object.freeze({ stress: -3, affection: 2, opinion: 3, engagement: 1 })
+    accept: Object.freeze({ affection: 2, viewers: 4, engagement: 4 }),
+    deny: Object.freeze({ stress: -2, affection: 2, viewers: -1, opinion: 4, engagement: -2 }),
+    joy: Object.freeze({ stress: -4, affection: 3, opinion: 3, engagement: 3 }),
+    anger: Object.freeze({ stress: 3, opinion: 3, engagement: 5 }),
+    sadness: Object.freeze({ stress: -3, affection: 3, opinion: 4, engagement: 1 }),
+    fun: Object.freeze({ stress: -3, affection: 2, viewers: 2, engagement: 5 })
 });
 
 /**
@@ -230,6 +231,9 @@ export class AeroLiveRuntime {
                 const step = Math.min(remaining, Math.max(0, activePrompt.timeRemainingSeconds));
                 this.#advanceElapsedTime(step);
                 activePrompt.timeRemainingSeconds = Math.max(0, activePrompt.timeRemainingSeconds - step);
+                if (this.#state.activeCoreChat) {
+                    this.#syncActiveCoreChatRow();
+                }
                 remaining -= step;
 
                 if (activePrompt.timeRemainingSeconds <= EPSILON) {
@@ -267,8 +271,8 @@ export class AeroLiveRuntime {
     }
 
     /**
-     * 현재 핵심 채팅을 강퇴 또는 그대로 두기로 처리합니다.
-     * @param {'kick'|'ignore'} action - 적용할 관리 행동입니다.
+     * 현재 핵심 채팅을 강퇴, 삭제 또는 무시로 처리합니다.
+     * @param {'kick'|'delete'|'ignore'} action - 적용할 관리 행동입니다.
      * @returns {object} 수락 여부와 처리 결과입니다.
      */
     resolveCoreChat(action) {
@@ -292,8 +296,8 @@ export class AeroLiveRuntime {
     }
 
     /**
-     * 현재 후원 메시지에 다섯 방송 지시 중 하나로 응답합니다.
-     * @param {'positive'|'negative'|'ignore'|'redirect'|'empathy'} instructionId - 선택한 지시 식별자입니다.
+     * 현재 후원 메시지에 여섯 감정·판단 지시 중 하나로 응답합니다.
+     * @param {'accept'|'deny'|'joy'|'anger'|'sadness'|'fun'} instructionId - 선택한 지시 식별자입니다.
      * @returns {object} 수락 여부와 적절성 판정 결과입니다.
      */
     resolveDonation(instructionId) {
@@ -481,7 +485,12 @@ export class AeroLiveRuntime {
             activeDonation: this.#buildPromptSnapshot(this.#state.activeDonation),
             metrics: this.#state.metrics,
             resources: this.#state.resources,
-            chats: this.#state.chats,
+            chats: this.#state.chats.map((chat) => ({
+                ...chat,
+                timeRemainingSeconds: chat.kind === 'core'
+                    ? roundSeconds(chat.timeRemainingSeconds)
+                    : chat.timeRemainingSeconds
+            })),
             bannedAuthors: [...this.#bannedAuthors],
             stats: this.#state.stats,
             result: this.#state.result
@@ -532,6 +541,15 @@ export class AeroLiveRuntime {
                         || appropriate.length === 0
                         || appropriate.some((id) => !VALID_INSTRUCTION_IDS.has(id))) {
                         throw new TypeError(`비트 ${beat.id}의 후원 지시 계약이 올바르지 않습니다.`);
+                    }
+                    const heroResponses = beat.donation.heroResponses;
+                    const responseIds = heroResponses && typeof heroResponses === 'object'
+                        ? Object.keys(heroResponses)
+                        : [];
+                    if (responseIds.length !== VALID_INSTRUCTION_IDS.size
+                        || responseIds.some((id) => !VALID_INSTRUCTION_IDS.has(id))
+                        || [...VALID_INSTRUCTION_IDS].some((id) => !sanitizeText(heroResponses[id], MAX_GENERATED_CHAT_CHARS))) {
+                        throw new TypeError(`비트 ${beat.id}의 후원 응답 계약이 올바르지 않습니다.`);
                     }
                 }
                 beatIds.add(beat.id);
@@ -630,6 +648,7 @@ export class AeroLiveRuntime {
             coreChatsResolved: 0,
             coreChatsSucceeded: 0,
             coreChatTimeouts: 0,
+            coreChatsDeleted: 0,
             wrongPositiveKicks: 0,
             kicksUsed: 0,
             donationsPresented: 0,
@@ -711,8 +730,11 @@ export class AeroLiveRuntime {
             return;
         }
 
+        const coreChatId = sanitizeText(coreChat.id, 80) || `${beatId}-core-chat`;
         this.#state.activeCoreChat = {
-            id: coreChat.id,
+            id: coreChatId,
+            coreChatId,
+            chatId: null,
             author,
             viewer_id: author,
             text: sanitizeText(coreChat.text, MAX_GENERATED_CHAT_CHARS),
@@ -721,6 +743,18 @@ export class AeroLiveRuntime {
             beatId,
             timeRemainingSeconds: this.#timing.coreChatSeconds
         };
+        const inlineChat = this.#appendChat({
+            author,
+            viewer_id: author,
+            text: this.#state.activeCoreChat.text,
+            sentiment: this.#state.activeCoreChat.sentiment,
+            source: 'core',
+            kind: 'core',
+            coreChatId,
+            active: true,
+            timeRemainingSeconds: this.#timing.coreChatSeconds
+        });
+        this.#state.activeCoreChat.chatId = inlineChat.id;
         this.#state.stats.coreChatsPresented += 1;
         this.#emit('core-chat-started', {
             coreChat: this.#buildPromptSnapshot(this.#state.activeCoreChat),
@@ -752,8 +786,10 @@ export class AeroLiveRuntime {
             amount: calculatedAmount,
             tone: sanitizeText(donation.tone, 24) || 'neutral',
             appropriateInstructions: [...donation.appropriateInstructions],
-            successResponse: donation.successResponse,
-            failureResponse: donation.failureResponse,
+            heroResponses: Object.fromEntries(AERO_LIVE_DONATION_INSTRUCTIONS.map(({ id }) => [
+                id,
+                sanitizeText(donation.heroResponses[id], MAX_GENERATED_CHAT_CHARS)
+            ])),
             timeoutResponse: donation.timeoutResponse,
             beatId,
             timeRemainingSeconds: this.#timing.donationSeconds
@@ -793,7 +829,7 @@ export class AeroLiveRuntime {
 
     /**
      * 활성 핵심 채팅을 관리 행동 또는 위장 채팅 의도로 해결합니다.
-     * @param {'kick'|'ignore'|'timeout'|'player-message'} action - 내부 처리 행동입니다.
+     * @param {'kick'|'delete'|'ignore'|'timeout'|'player-message'} action - 내부 처리 행동입니다.
      * @param {string|null} [intent=null] - 위장 채팅으로 처리할 때의 의도입니다.
      * @returns {object} 처리 결과입니다.
      * @private
@@ -808,6 +844,14 @@ export class AeroLiveRuntime {
         let outcome = 'observed';
         this.#state.activeCoreChat = null;
         this.#state.stats.coreChatsResolved += 1;
+        if (action === 'kick') {
+            this.#removeChatsByAuthor(chat.author);
+        } else if (action === 'delete') {
+            this.#removeChatById(chat.chatId);
+            this.#state.stats.coreChatsDeleted += 1;
+        } else {
+            this.#deactivateCoreChatRow(chat.chatId);
+        }
 
         this.#mutateMetrics(`core-chat:${action}`, (metrics) => {
             if (action === 'kick') {
@@ -829,6 +873,23 @@ export class AeroLiveRuntime {
                         outcome = 'neutral-over-moderated';
                     }
                     metrics.opinion -= 8;
+                }
+                return;
+            }
+
+            if (action === 'delete') {
+                if (chat.sentiment === 'negative') {
+                    metrics.opinion += 1;
+                    metrics.engagement -= 1;
+                    success = true;
+                    outcome = 'negative-message-deleted';
+                } else if (chat.sentiment === 'positive') {
+                    this.#shiftViewerSentiment(metrics, 'negative', 0.02);
+                    metrics.opinion -= 4;
+                    outcome = 'positive-wrongly-deleted';
+                } else {
+                    metrics.opinion -= 2;
+                    outcome = 'neutral-message-deleted';
                 }
                 return;
             }
@@ -878,7 +939,8 @@ export class AeroLiveRuntime {
             success,
             outcome,
             metrics: cloneData(this.#state.metrics),
-            kicksRemaining: this.#state.resources.kicksRemaining
+            kicksRemaining: this.#state.resources.kicksRemaining,
+            deletedMessages: this.#state.stats.coreChatsDeleted
         };
     }
 
@@ -937,7 +999,7 @@ export class AeroLiveRuntime {
     #resolveActiveDonation(instructionId) {
         const donation = cloneData(this.#state.activeDonation);
         const appropriate = donation.appropriateInstructions.includes(instructionId);
-        const heroResponse = appropriate ? donation.successResponse : donation.failureResponse;
+        const heroResponse = donation.heroResponses[instructionId];
 
         this.#state.activeDonation = null;
         if (appropriate) {
@@ -1103,6 +1165,7 @@ export class AeroLiveRuntime {
      */
     #appendChat(chat) {
         this.#chatSequence += 1;
+        const isCoreChat = chat.kind === 'core';
         const appended = {
             id: `broadcast-${this.#broadcastSequence}-chat-${this.#chatSequence}`,
             author: chat.author,
@@ -1113,14 +1176,83 @@ export class AeroLiveRuntime {
             intent: chat.intent || null,
             masked: chat.masked === true,
             beatId: this.#getCurrentBeat()?.id || null,
-            atSeconds: roundSeconds(this.#state.elapsedSeconds)
+            atSeconds: roundSeconds(this.#state.elapsedSeconds),
+            ...(isCoreChat ? {
+                kind: 'core',
+                coreChatId: chat.coreChatId,
+                active: chat.active === true,
+                timeRemainingSeconds: Math.max(0, Number(chat.timeRemainingSeconds) || 0)
+            } : {})
         };
 
         this.#state.chats.push(appended);
-        if (this.#state.chats.length > this.#maxChatFeed) {
-            this.#state.chats.splice(0, this.#state.chats.length - this.#maxChatFeed);
-        }
+        this.#trimChatFeed();
         return appended;
+    }
+
+    /**
+     * 활성 핵심 채팅 행의 인라인 타이머를 런타임 프롬프트와 동기화합니다.
+     * @private
+     */
+    #syncActiveCoreChatRow() {
+        const activeCoreChat = this.#state.activeCoreChat;
+        if (!activeCoreChat?.chatId) {
+            return;
+        }
+        const row = this.#state.chats.find((chat) => chat.id === activeCoreChat.chatId);
+        if (row) {
+            row.active = true;
+            row.timeRemainingSeconds = Math.max(0, activeCoreChat.timeRemainingSeconds);
+        }
+    }
+
+    /**
+     * 처리하거나 만료된 핵심 채팅 행을 피드에 남긴 채 비활성화합니다.
+     * @param {string} chatId - 비활성화할 인라인 행 ID입니다.
+     * @private
+     */
+    #deactivateCoreChatRow(chatId) {
+        const row = this.#state.chats.find((chat) => chat.id === chatId);
+        if (row) {
+            row.active = false;
+            row.timeRemainingSeconds = 0;
+        }
+    }
+
+    /**
+     * 지정 인라인 행 하나만 피드에서 제거합니다.
+     * @param {string} chatId - 제거할 행 ID입니다.
+     * @private
+     */
+    #removeChatById(chatId) {
+        const index = this.#state.chats.findIndex((chat) => chat.id === chatId);
+        if (index >= 0) {
+            this.#state.chats.splice(index, 1);
+        }
+    }
+
+    /**
+     * 강퇴된 작성자의 현재 피드 메시지를 모두 제거합니다.
+     * @param {string} author - 제거할 작성자 ID입니다.
+     * @private
+     */
+    #removeChatsByAuthor(author) {
+        this.#state.chats = this.#state.chats.filter((chat) => chat.author !== author);
+    }
+
+    /**
+     * 활성 핵심 채팅 행을 보존하면서 채팅 피드 길이를 제한합니다.
+     * @private
+     */
+    #trimChatFeed() {
+        const activeChatId = this.#state.activeCoreChat?.chatId || null;
+        while (this.#state.chats.length > this.#maxChatFeed) {
+            const removableIndex = this.#state.chats.findIndex((chat) => chat.id !== activeChatId);
+            if (removableIndex < 0) {
+                break;
+            }
+            this.#state.chats.splice(removableIndex, 1);
+        }
     }
 
     /**
@@ -1292,6 +1424,7 @@ export class AeroLiveRuntime {
                 coreChat: this.#buildPromptSnapshot(this.#state.activeCoreChat),
                 reason: endType
             });
+            this.#deactivateCoreChatRow(this.#state.activeCoreChat.chatId);
         }
         if (this.#state.activeDonation) {
             this.#emit('donation-cancelled', {
@@ -1350,10 +1483,12 @@ export class AeroLiveRuntime {
                 resolved: this.#state.stats.coreChatsResolved,
                 succeeded: this.#state.stats.coreChatsSucceeded,
                 timeouts: this.#state.stats.coreChatTimeouts,
+                deleted: this.#state.stats.coreChatsDeleted,
                 wrongPositiveKicks: this.#state.stats.wrongPositiveKicks
             },
             moderation: {
                 kicksUsed: this.#state.stats.kicksUsed,
+                deletedMessages: this.#state.stats.coreChatsDeleted,
                 bannedAuthors: [...this.#bannedAuthors]
             },
             playerMessages: {
@@ -1444,6 +1579,9 @@ export class AeroLiveRuntime {
     #buildCoreMoment(chat, action, outcome) {
         if (outcome === 'positive-wrongly-kicked') return '응원 핵심 채팅 작성자를 잘못 강퇴해 긍정 시청자가 이탈했습니다.';
         if (action === 'kick') return `${chat.author}을 강퇴해 남은 방송에서 다시 등장하지 못하게 했습니다.`;
+        if (outcome === 'negative-message-deleted') return '부정적 핵심 채팅 메시지만 삭제하고 작성자는 방송에 남겼습니다.';
+        if (outcome === 'positive-wrongly-deleted') return '응원 핵심 채팅을 잘못 삭제해 여론이 차가워졌습니다.';
+        if (action === 'delete') return `${chat.author}의 핵심 채팅 메시지만 삭제했습니다.`;
         if (outcome === 'negative-rebutted') return '부정적 핵심 채팅을 차분하게 반박해 여론을 회복했습니다.';
         if (outcome === 'negative-escalated') return '부정적 채팅을 자극해 논쟁과 스트레스가 커졌습니다.';
         if (outcome === 'positive-recognized' || outcome === 'positive-amplified') return '따뜻한 응원 채팅이 히로인의 긴장을 풀어주었습니다.';
@@ -1562,6 +1700,19 @@ export class AeroLiveRuntime {
         }
         if (this.#state.resources.kicksRemaining < 0 || this.#state.resources.playerMessagesRemaining < 0) {
             throw new Error('방송 행동 사용 가능 횟수가 음수가 되었습니다.');
+        }
+        const activeCoreRows = this.#state.chats.filter((chat) => chat.kind === 'core' && chat.active === true);
+        if (this.#state.activeCoreChat) {
+            const [activeRow] = activeCoreRows;
+            if (activeCoreRows.length !== 1
+                || activeRow.id !== this.#state.activeCoreChat.chatId
+                || activeRow.source !== 'core'
+                || activeRow.coreChatId !== this.#state.activeCoreChat.coreChatId
+                || Math.abs(activeRow.timeRemainingSeconds - this.#state.activeCoreChat.timeRemainingSeconds) > EPSILON) {
+                throw new Error('활성 핵심 채팅과 인라인 채팅 행이 동기화되지 않았습니다.');
+            }
+        } else if (activeCoreRows.length > 0) {
+            throw new Error('활성 프롬프트 없이 활성 핵심 채팅 행이 남아 있습니다.');
         }
         if (this.#state.status === 'ended' && (this.#state.activeCoreChat || this.#state.activeDonation)) {
             throw new Error('종료된 방송에는 활성 제한시간 이벤트가 남을 수 없습니다.');

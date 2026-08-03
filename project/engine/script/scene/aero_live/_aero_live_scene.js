@@ -4,10 +4,14 @@ import { getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_system.js';
 import { getDelta } from 'engine/time_handler.js';
 import { getKeyboardCodeInput } from 'input/input_system.js';
 import { UIPool, releaseUIItem } from 'ui/_ui_pool.js';
-import { AERO_LIVE_DEFAULT_TIMING } from './_aero_live_content.mjs';
+import {
+    AERO_LIVE_DEFAULT_TIMING,
+    AERO_LIVE_VIEWER_IDS
+} from './_aero_live_content.mjs';
 import { AeroLiveCampaign } from './_aero_live_campaign.mjs';
 import { AeroLiveRuntime } from './_aero_live_runtime.mjs';
 import { AeroLiveAiService } from './_aero_live_ai_service.js';
+import { buildVisibleChatRows } from './_aero_live_chat_layout.mjs';
 import { AeroLiveDomComposer } from './_aero_live_dom_composer.js';
 import { AeroLiveRenderer } from './_aero_live_renderer.js';
 
@@ -19,10 +23,11 @@ const MODE_TOPIC_SELECT = 'topicSelect';
 const MODE_LIVE = 'live';
 const MODE_RESULTS = 'results';
 const AMBIENT_CHAT_START_DELAY_SECONDS = 2;
-const AMBIENT_CHAT_INTERVAL_SECONDS = 1;
+const AMBIENT_CHAT_INTERVAL_SECONDS = 2;
 const CORE_ACTIONS = Object.freeze([
     Object.freeze({ id: 'kick', label: '강퇴', color: COLORS.NEGATIVE }),
-    Object.freeze({ id: 'ignore', label: '그대로 두기', color: COLORS.NEUTRAL })
+    Object.freeze({ id: 'delete', label: '삭제', color: COLORS.WARNING }),
+    Object.freeze({ id: 'ignore', label: '무시', color: COLORS.NEUTRAL })
 ]);
 
 /**
@@ -114,7 +119,11 @@ export class AeroLiveScene extends BaseScene {
         this.buttons = [];
         this.topicButtons = [];
         this.coreButtons = [];
+        this.coreRowButtons = [];
         this.donationButtons = [];
+        this.visibleChatRows = [];
+        this.coreRowButtonSignature = '';
+        this.selectedCoreChatId = null;
         this.runtimeOptions = this.options.runtimeOptions || {};
         this.timerMaximums = createTimerMaximums(this.runtimeOptions);
         this.campaign = this.options.campaign || new AeroLiveCampaign({
@@ -163,8 +172,8 @@ export class AeroLiveScene extends BaseScene {
         this.#handleKeyboardInput();
         this.#syncSnapshotState();
         this.#syncButtonStates();
-        for (const button of this.buttons) {
-            if (button.visible) {
+        for (const button of [...this.buttons]) {
+            if (this.buttons.includes(button) && button.visible) {
                 button.update();
             }
         }
@@ -259,6 +268,8 @@ export class AeroLiveScene extends BaseScene {
             topicSummaries: this.topicSummaries,
             topicButtons: this.topicButtons,
             coreButtons: this.coreButtons,
+            visibleChatRows: this.visibleChatRows,
+            selectedCoreChatId: this.selectedCoreChatId,
             donationButtons: this.donationButtons,
             endButton: this.endButton,
             modalCancelButton: this.modalCancelButton,
@@ -392,18 +403,11 @@ export class AeroLiveScene extends BaseScene {
             w: coreButtonW,
             h: coreActionH
         }));
-        const pinnedCoreH = Math.max(vy(11.5), 72);
-        this.layout.coreCard = {
-            x: rightInnerX,
-            y: coreActionsY - gap - pinnedCoreH,
-            w: rightInnerW,
-            h: pinnedCoreH
-        };
         this.layout.chatArea = {
             x: rightInnerX,
             y: bodyY + panelPad + vy(4.6),
             w: rightInnerW,
-            h: Math.max(1, this.layout.coreCard.y - gap - (bodyY + panelPad + vy(4.6)))
+            h: Math.max(1, coreActionsY - gap - (bodyY + panelPad + vy(4.6)))
         };
 
         this.#buildTopicLayout();
@@ -517,6 +521,67 @@ export class AeroLiveScene extends BaseScene {
         this.resultRestartButton.aeroRole = MODE_RESULTS;
         this.resultTopicsButton = this.#createHitButton(this.layout.resultTopics, () => this.#returnToTopicSelect());
         this.resultTopicsButton.aeroRole = MODE_RESULTS;
+        this.#syncCoreRowButtons(true);
+    }
+
+    /**
+     * 현재 피드에서 보이는 핵심 채팅 행에만 풀링 클릭 히트박스를 맞춥니다.
+     * @param {boolean} [force=false] - 행 구성이 같아도 히트박스를 다시 만들지 여부입니다.
+     * @private
+     */
+    #syncCoreRowButtons(force = false) {
+        if (!this.layout?.chatArea) {
+            return;
+        }
+
+        this.visibleChatRows = buildVisibleChatRows({
+            chats: this.snapshot?.chats,
+            rect: this.layout.chatArea,
+            visibleCount: UI.CHAT_VISIBLE_COUNT,
+            preferredLineHeight: this.WH * UI.CHAT_LINE_HEIGHT_WH / 100
+        });
+        const activeCoreChatId = this.#getActiveCoreChatId();
+        const interactiveRows = this.visibleChatRows.filter(({ chat }) => {
+            const coreChatId = safeText(chat?.coreChatId, 80);
+            return chat?.kind === 'core'
+                && chat?.active !== false
+                && coreChatId
+                && coreChatId === activeCoreChatId;
+        });
+        const signature = interactiveRows.map(({ chat, rect }) => [
+            safeText(chat?.id, 100),
+            safeText(chat?.coreChatId, 80),
+            rect.x,
+            rect.y,
+            rect.w,
+            rect.h
+        ].join(':')).join('|');
+        if (!force && signature === this.coreRowButtonSignature) {
+            return;
+        }
+
+        this.#releaseCoreRowButtons();
+        this.coreRowButtonSignature = signature;
+        this.coreRowButtons = interactiveRows.map(({ chat, rect }) => {
+            const coreChatId = safeText(chat.coreChatId, 80);
+            const button = this.#createHitButton(rect, () => this.#toggleCoreChatSelection(coreChatId));
+            button.aeroRole = 'core-row';
+            button.aeroData = { chat, coreChatId };
+            return button;
+        });
+    }
+
+    /** 보이는 핵심 채팅 행의 풀링 버튼만 반납합니다. @private */
+    #releaseCoreRowButtons() {
+        if (this.coreRowButtons.length === 0) {
+            return;
+        }
+        const rowButtons = new Set(this.coreRowButtons);
+        this.buttons = this.buttons.filter((button) => !rowButtons.has(button));
+        for (const button of this.coreRowButtons) {
+            releaseUIItem(button);
+        }
+        this.coreRowButtons = [];
     }
 
     /**
@@ -558,9 +623,14 @@ export class AeroLiveScene extends BaseScene {
      * @private
      */
     #syncButtonStates() {
+        this.#syncCoreSelection();
+        this.#syncCoreRowButtons();
         const live = this.mode === MODE_LIVE && this.snapshot?.status === 'live';
         const interactionLocked = this.earlyEndModalOpen || this.inputClassificationPending;
-        const coreActive = live && !!this.snapshot?.activeCoreChat;
+        const activeCoreChatId = this.#getActiveCoreChatId();
+        const coreSelected = live
+            && !!activeCoreChatId
+            && this.selectedCoreChatId === activeCoreChatId;
         const donationActive = live && !!this.snapshot?.activeDonation;
 
         for (const button of this.topicButtons) {
@@ -569,7 +639,15 @@ export class AeroLiveScene extends BaseScene {
         for (const button of this.coreButtons) {
             const isKickUnavailable = button.aeroData?.id === 'kick'
                 && finiteNumber(this.snapshot?.resources?.kicksRemaining, 0) <= 0;
-            this.#setButtonState(button, coreActive, interactionLocked || isKickUnavailable);
+            this.#setButtonState(button, coreSelected, interactionLocked || isKickUnavailable);
+        }
+        for (const button of this.coreRowButtons) {
+            const rowCoreChatId = safeText(button.aeroData?.coreChatId, 80);
+            this.#setButtonState(
+                button,
+                live && rowCoreChatId === activeCoreChatId,
+                interactionLocked
+            );
         }
         for (const button of this.donationButtons) {
             this.#setButtonState(button, live, interactionLocked || !donationActive);
@@ -609,7 +687,10 @@ export class AeroLiveScene extends BaseScene {
         this.buttons = [];
         this.topicButtons = [];
         this.coreButtons = [];
+        this.coreRowButtons = [];
         this.donationButtons = [];
+        this.visibleChatRows = [];
+        this.coreRowButtonSignature = '';
         this.endButton = null;
         this.modalCancelButton = null;
         this.modalConfirmButton = null;
@@ -699,6 +780,7 @@ export class AeroLiveScene extends BaseScene {
             this.snapshot = this.runtime.startBroadcast(topicId);
             this.mode = MODE_LIVE;
             this.earlyEndModalOpen = false;
+            this.selectedCoreChatId = null;
             this.timerMaximums = createTimerMaximums(this.runtimeOptions);
             this.heroResponseText = '';
             this.heroResponseSecondsRemaining = 0;
@@ -748,6 +830,7 @@ export class AeroLiveScene extends BaseScene {
         this.asyncGeneration += 1;
         this.aiService?.abortAll?.();
         this.inputClassificationPending = false;
+        this.selectedCoreChatId = null;
         this.heroResponseText = '';
         this.heroResponseSecondsRemaining = 0;
         this.#clearAmbientChatQueue();
@@ -771,16 +854,61 @@ export class AeroLiveScene extends BaseScene {
         }
     }
 
+    /** @returns {string} 현재 활성 핵심 채팅의 안정적인 ID입니다. @private */
+    #getActiveCoreChatId() {
+        return safeText(
+            this.snapshot?.activeCoreChat?.coreChatId || this.snapshot?.activeCoreChat?.id,
+            80
+        );
+    }
+
+    /** 활성 핵심 채팅이 바뀌거나 사라지면 이전 행 선택을 해제합니다. @private */
+    #syncCoreSelection() {
+        const activeCoreChatId = this.#getActiveCoreChatId();
+        if (!activeCoreChatId
+            || (this.selectedCoreChatId && this.selectedCoreChatId !== activeCoreChatId)) {
+            this.selectedCoreChatId = null;
+        }
+    }
+
     /**
-     * 현재 핵심 채팅에 강퇴 또는 그대로 두기 행동을 적용합니다.
-     * @param {'kick'|'ignore'} action - 핵심 채팅 대응 행동입니다.
+     * 피드 안의 활성 핵심 채팅 행을 선택하거나 같은 행 선택을 해제합니다.
+     * @param {string} coreChatId - 피드 행이 가리키는 핵심 채팅 ID입니다.
+     * @private
+     */
+    #toggleCoreChatSelection(coreChatId) {
+        if (this.mode !== MODE_LIVE || this.earlyEndModalOpen || this.inputClassificationPending) {
+            return;
+        }
+        const safeCoreChatId = safeText(coreChatId, 80);
+        if (!safeCoreChatId || safeCoreChatId !== this.#getActiveCoreChatId()) {
+            this.selectedCoreChatId = null;
+            this.#syncButtonStates();
+            return;
+        }
+        this.selectedCoreChatId = this.selectedCoreChatId === safeCoreChatId
+            ? null
+            : safeCoreChatId;
+        this.#syncButtonStates();
+    }
+
+    /**
+     * 선택한 핵심 채팅에 강퇴, 삭제 또는 무시 행동을 적용합니다.
+     * @param {'kick'|'delete'|'ignore'} action - 핵심 채팅 대응 행동입니다.
      * @private
      */
     #resolveCoreChat(action) {
         if (this.mode !== MODE_LIVE || this.earlyEndModalOpen || this.inputClassificationPending) {
             return;
         }
+        if (!this.selectedCoreChatId || this.selectedCoreChatId !== this.#getActiveCoreChatId()) {
+            this.#showToast('처리할 핵심 채팅을 먼저 선택해 주세요.');
+            return;
+        }
         const response = this.runtime.resolveCoreChat(action);
+        if (response?.accepted) {
+            this.selectedCoreChatId = null;
+        }
         this.#refreshRuntimeState();
         if (!response?.accepted) {
             this.#showToast(response?.reason || '지금은 해당 채팅을 처리할 수 없습니다.');
@@ -926,7 +1054,7 @@ export class AeroLiveScene extends BaseScene {
     }
 
     /**
-     * beat 시작 2초 뒤부터 안전 폴백과 AI 채팅을 1초 간격 큐로 방출합니다.
+     * beat 시작 2초 뒤부터 안전 폴백과 AI 채팅을 2초 간격 큐로 방출합니다.
      * @param {object} event - beat-started 런타임 이벤트입니다.
      * @returns {Promise<void>} 비동기 채팅 생성 완료 Promise입니다.
      * @private
@@ -1035,6 +1163,7 @@ export class AeroLiveScene extends BaseScene {
             return;
         }
         if (event.type === 'core-chat-started') {
+            this.selectedCoreChatId = null;
             this.timerMaximums.core = Math.max(
                 Number.EPSILON,
                 finiteNumber(
@@ -1062,8 +1191,15 @@ export class AeroLiveScene extends BaseScene {
                 : (event.appropriate ? '후원 의도에 맞는 디렉션이었습니다.' : '후원 의도와 어긋난 디렉션이었습니다.'));
             return;
         }
-        if (event.type === 'core-chat-resolved' && event.action === 'timeout') {
-            this.#showToast('핵심 채팅 대응 시간이 지났습니다.');
+        if (event.type === 'core-chat-resolved') {
+            this.selectedCoreChatId = null;
+            if (event.action === 'timeout') {
+                this.#showToast('핵심 채팅 대응 시간이 지났습니다.');
+            }
+            return;
+        }
+        if (event.type === 'core-chat-cancelled') {
+            this.selectedCoreChatId = null;
             return;
         }
         if (event.type === 'player-message-blocked') {
@@ -1078,6 +1214,7 @@ export class AeroLiveScene extends BaseScene {
             this.campaign?.completeBroadcast?.(event.summary);
             this.inputClassificationPending = false;
             this.earlyEndModalOpen = false;
+            this.selectedCoreChatId = null;
             this.asyncGeneration += 1;
             this.#clearAmbientChatQueue();
             this.aiService?.abortAll?.();
@@ -1107,6 +1244,8 @@ export class AeroLiveScene extends BaseScene {
         if (!this.snapshot) {
             return;
         }
+        this.#syncCoreSelection();
+        this.#syncCoreRowButtons();
         if (this.snapshot.activeCoreChat) {
             this.timerMaximums.core = Math.max(
                 this.timerMaximums.core,
@@ -1122,23 +1261,38 @@ export class AeroLiveScene extends BaseScene {
         if (this.snapshot.status === 'ended') {
             this.mode = MODE_RESULTS;
             this.earlyEndModalOpen = false;
+            this.selectedCoreChatId = null;
         }
     }
 
     /**
-     * 현재 채팅과 폴백 목록에서 AI 계약에 사용할 시청자 ID를 추출합니다.
+     * 현재 채팅과 폴백 목록에 제품 시청자 풀을 섞어 AI 계약의 허용 ID를 만듭니다.
      * @param {Array<object>} [fallbackChats=[]] - beat의 폴백 채팅입니다.
      * @returns {string[]} 최대 12개의 고유 시청자 ID입니다.
      * @private
      */
     #getViewerIds(fallbackChats = []) {
-        const ids = [
+        const contextualIds = [
             ...(Array.isArray(fallbackChats) ? fallbackChats : []),
             ...(Array.isArray(this.snapshot?.chats) ? this.snapshot.chats : [])
         ]
             .map((chat) => safeText(chat?.viewer_id || chat?.viewerId || chat?.author || chat?.nickname, 24))
             .filter(Boolean);
-        const uniqueIds = [...new Set(ids)].slice(0, 12);
+        const uniqueContextualIds = [...new Set(contextualIds)].slice(-6);
+        const viewerPool = (Array.isArray(AERO_LIVE_VIEWER_IDS) ? AERO_LIVE_VIEWER_IDS : [])
+            .map((viewerId) => safeText(viewerId, 24))
+            .filter(Boolean);
+        const poolOffset = viewerPool.length > 0
+            ? (Math.max(0, Math.floor(finiteNumber(this.snapshot?.currentBeat?.index, 0))) * 7) % viewerPool.length
+            : 0;
+        const rotatedPool = viewerPool.length > 0
+            ? [...viewerPool.slice(poolOffset), ...viewerPool.slice(0, poolOffset)]
+            : [];
+        const uniqueIds = [...new Set([
+            ...uniqueContextualIds,
+            ...rotatedPool,
+            ...contextualIds
+        ])].slice(0, 12);
         return uniqueIds.length > 0 ? uniqueIds : ['aqua_fan', 'cloud_note', 'bubble_pop'];
     }
 

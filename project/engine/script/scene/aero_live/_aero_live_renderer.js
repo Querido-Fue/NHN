@@ -3,6 +3,7 @@ import { getDisplaySystem, measureText, render } from 'display/display_system.js
 import { OverlaySession } from 'overlay/_overlay_session.js';
 import { getSetting } from 'save/save_system.js';
 import { createFontString, truncateTextToWidth, wrapTextByCharacters } from 'util/font_util.js';
+import { buildVisibleChatRows } from './_aero_live_chat_layout.mjs';
 
 const AERO_CONSTANTS = getData('AERO_LIVE_SCENE_CONSTANTS');
 const UI = AERO_CONSTANTS.UI;
@@ -11,7 +12,11 @@ const HERO_EXPRESSION_PATHS = AERO_CONSTANTS.ASSET.HERO_EXPRESSION_PATHS || {};
 const HERO_FALLBACK_EXPRESSION = AERO_CONSTANTS.ASSET.HERO_FALLBACK_EXPRESSION || 'default';
 const FONT_FAMILY = 'Pretendard Variable, arial';
 const TOPIC_ACCENTS = Object.freeze(['#42E0D0', '#62D65B', '#FFD65A', '#FF8AA1', '#7B9CFF']);
-const CORE_COLORS = Object.freeze({ kick: COLORS.NEGATIVE, ignore: COLORS.NEUTRAL });
+const CORE_COLORS = Object.freeze({
+    kick: COLORS.NEGATIVE,
+    delete: COLORS.WARNING,
+    ignore: COLORS.NEUTRAL
+});
 const GLASS_STYLE = Object.freeze({
     BLUR: 16,
     TINT_STRENGTH: 0.2,
@@ -533,7 +538,7 @@ export class AeroLiveRenderer {
         this.#label(c.aiStatus || 'AI 준비', endX - statW * 3 - pad * .5, rect.y + rect.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.DEEP_BLUE, { align: 'right', baseline: 'middle', weight: 800, maxWidth: rect.w * .11 });
     }
 
-    /** 후원 카드, 방송 지표와 다섯 지시를 그립니다. @private */
+    /** 후원 카드, 방송 지표와 여섯 감정 지시를 그립니다. @private */
     #leftPanel() {
         const c = this.context;
         const rect = c.layout.left;
@@ -574,7 +579,7 @@ export class AeroLiveRenderer {
         const stage = c.layout.heroStage;
         const dialogue = c.layout.heroDialogue;
         const beat = c.snapshot?.currentBeat || {};
-        const active = c.snapshot?.activeCoreChat || c.snapshot?.activeDonation;
+        const activeDonation = c.snapshot?.activeDonation;
         const heroImage = this.#heroImageForExpression(beat.expression);
         this.#panel(c.layout.center, { fill: COLORS.GLASS_FILL, alpha: .89, tintColor: COLORS.AERO_PINK || COLORS.SKY_HAZE, tintStrength: .07 });
         this.#drawContent({
@@ -621,9 +626,8 @@ export class AeroLiveRenderer {
         const expressionLabel = EXPRESSION_LABELS[beat.expression] || text(beat.expression || '기본', 14);
         const moodLabel = MOOD_LABELS[beat.mood] || text(beat.mood || '평온', 14);
         this.#label(`${expressionLabel} · ${moodLabel}`, tag.x + tag.w / 2, tag.y + tag.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 850, maxWidth: tag.w * .9 });
-        if (active) {
-            const core = !!c.snapshot?.activeCoreChat;
-            this.#timer({ x: stage.x + stage.w * .2, y: stage.y + stage.h * .91, w: stage.w * .6, h: Math.max(9, stage.h * .022) }, active.timeRemainingSeconds, core ? c.timerMaximums.core : c.timerMaximums.donation, core ? COLORS.NEGATIVE : COLORS.WARNING, core ? '핵심 채팅 결정' : '후원 디렉션');
+        if (activeDonation) {
+            this.#timer({ x: stage.x + stage.w * .2, y: stage.y + stage.h * .91, w: stage.w * .6, h: Math.max(9, stage.h * .022) }, activeDonation.timeRemainingSeconds, c.timerMaximums.donation, COLORS.WARNING, '후원 디렉션');
         }
         this.#panel(dialogue, {
             fill: 'rgba(7,35,59,0.34)',
@@ -648,7 +652,6 @@ export class AeroLiveRenderer {
         this.#label('실시간 채팅', rect.x + c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950 });
         this.#label(`자유 채팅 ${integer(resources.playerMessagesRemaining)}회`, rect.x + rect.w - c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SMALL_FONT_WH), COLORS.DEEP_BLUE, { align: 'right', baseline: 'middle', weight: 850 });
         this.#chats();
-        this.#core();
         c.coreButtons.forEach((button) => {
             const id = button.aeroData?.id;
             const label = id === 'kick' ? `강퇴 ${integer(resources.kicksRemaining)}` : button.aeroData?.label;
@@ -659,45 +662,100 @@ export class AeroLiveRenderer {
         this.#label(state, composer.x, composer.y - c.layout.gap * .42, this.#size(UI.SMALL_FONT_WH), c.inputClassificationPending ? COLORS.NEGATIVE : COLORS.INK_MUTED, { baseline: 'bottom', weight: 800, maxWidth: composer.w });
     }
 
-    /** 최근 일반 채팅을 고정 행으로 그립니다. @private */
+    /** 최근 일반·핵심 채팅을 같은 피드의 고정 행으로 그립니다. @private */
     #chats() {
         const c = this.context;
         const rect = c.layout.chatArea;
         const count = Math.max(1, Math.floor(number(UI.CHAT_VISIBLE_COUNT, 9)));
-        const chats = Array.isArray(c.snapshot?.chats) ? c.snapshot.chats.slice(-count) : [];
+        const chats = Array.isArray(c.snapshot?.chats) ? c.snapshot.chats : [];
+        const rows = Array.isArray(c.visibleChatRows)
+            ? c.visibleChatRows
+            : buildVisibleChatRows({
+                chats,
+                rect,
+                visibleCount: count,
+                preferredLineHeight: c.WH * UI.CHAT_LINE_HEIGHT_WH / 100
+            });
         this.#drawContent({ shape: 'roundRect', ...rect, radius: this.#radius() * .7, fill: 'rgba(245,254,255,0.34)', stroke: COLORS.GLASS_BORDER, lineWidth: 1 });
-        if (!chats.length) {
+        if (!rows.length) {
             this.#label('시청자 채팅을 기다리는 중입니다.', rect.x + rect.w / 2, rect.y + rect.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'center', baseline: 'middle', weight: 700 });
             return;
         }
-        const rowH = Math.max(23, Math.min(c.WH * UI.CHAT_LINE_HEIGHT_WH / 100, rect.h / count));
-        const startY = rect.y + rect.h - chats.length * rowH;
-        chats.forEach((chat, index) => {
-            const row = { x: rect.x + 3, y: startY + index * rowH, w: rect.w - 6, h: rowH - 2 };
-            const accent = chat.sentiment === 'positive' ? COLORS.POSITIVE : chat.sentiment === 'negative' ? COLORS.NEGATIVE : COLORS.NEUTRAL;
+        rows.forEach(({ chat = {}, rect: row }) => {
+            const core = chat.kind === 'core' || chat.source === 'core' || !!chat.coreChatId;
+            const coreId = chat.coreChatId || chat.id;
+            const activeCoreId = c.snapshot?.activeCoreChat?.id;
+            const coreActive = core && (chat.status === 'active' || (activeCoreId && coreId === activeCoreId));
+            const coreSelected = core && !!c.selectedCoreChatId && coreId === c.selectedCoreChatId;
+            const accent = core
+                ? COLORS.NEGATIVE
+                : chat.sentiment === 'positive'
+                    ? COLORS.POSITIVE
+                    : chat.sentiment === 'negative'
+                        ? COLORS.NEGATIVE
+                        : COLORS.NEUTRAL;
             const player = String(chat.source || '').includes('player');
-            this.#drawContent({ shape: 'roundRect', ...row, radius: Math.max(4, row.h * .2), fill: player ? 'rgba(66,224,208,0.18)' : COLORS.GLASS_FILL_STRONG, alpha: .84 });
+            const rowFill = coreSelected
+                ? 'rgba(255,214,90,0.3)'
+                : coreActive
+                    ? 'rgba(255,107,120,0.22)'
+                    : player
+                        ? 'rgba(66,224,208,0.18)'
+                        : COLORS.GLASS_FILL_STRONG;
+            this.#drawContent({
+                shape: 'roundRect', ...row, radius: Math.max(4, row.h * .2),
+                fill: rowFill,
+                stroke: coreSelected ? COLORS.WARNING : coreActive ? COLORS.NEGATIVE : undefined,
+                lineWidth: coreSelected ? 2 : coreActive ? 1.35 : 0,
+                shadowBlur: coreSelected ? 8 : 0,
+                shadowColor: coreSelected ? COLORS.WARNING : undefined,
+                alpha: core && !coreActive && !coreSelected ? .66 : .9
+            });
             this.#drawContent({ shape: 'roundRect', x: row.x + 5, y: row.y + row.h * .25, w: 5, h: row.h * .5, radius: 999, fill: accent });
-            const authorW = Math.min(row.w * .31, 96);
-            this.#label(chat.author || chat.viewer_id || 'viewer', row.x + 15, row.y + row.h / 2, this.#size(UI.SMALL_FONT_WH), player ? COLORS.DEEP_BLUE : accent, { baseline: 'middle', weight: 900, maxWidth: authorW - 18 });
-            this.#label(chat.text, row.x + authorW, row.y + row.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.INK, { baseline: 'middle', weight: player ? 800 : 650, maxWidth: row.w - authorW - 10, clipRect: row });
+            const authorW = core ? Math.min(row.w * .39, 126) : Math.min(row.w * .31, 96);
+            const author = core
+                ? `CORE · ${chat.author || chat.viewer_id || 'viewer'}`
+                : chat.author || chat.viewer_id || 'viewer';
+            const textRight = row.x + row.w - 8;
+            this.#label(author, row.x + 15, row.y + row.h / 2, this.#size(UI.SMALL_FONT_WH), player ? COLORS.DEEP_BLUE : accent, { baseline: 'middle', weight: 900, maxWidth: authorW - 18 });
+            this.#label(chat.text, row.x + authorW, row.y + row.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.INK, { baseline: 'middle', weight: player || core ? 800 : 650, maxWidth: Math.max(20, textRight - (row.x + authorW)), clipRect: row });
+            if (coreActive) {
+                this.#inlineCoreTimer(row, chat.timeRemainingSeconds ?? c.snapshot?.activeCoreChat?.timeRemainingSeconds);
+            }
         });
     }
 
-    /** 활성 핵심 채팅과 대응 타이머를 그립니다. @private */
-    #core() {
-        const c = this.context;
-        const core = c.snapshot?.activeCoreChat;
-        const rect = c.layout.coreCard;
-        this.#panel(rect, { fill: core ? 'rgba(255,107,120,0.18)' : COLORS.GLASS_FILL_STRONG, stroke: core ? COLORS.NEGATIVE : COLORS.GLASS_BORDER, lineWidth: core ? 2.5 : 1.2 });
-        if (!core) {
-            this.#label('핵심 채팅 대기', rect.x + rect.w / 2, rect.y + rect.h * .44, this.#size(UI.BODY_FONT_WH), COLORS.INK_MUTED, { align: 'center', baseline: 'middle', weight: 900 });
-            this.#label('등장하면 강퇴·그대로 두기를 결정하세요.', rect.x + rect.w / 2, rect.y + rect.h * .7, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'center', baseline: 'middle', weight: 650, maxWidth: rect.w * .9 });
-            return;
+    /** 핵심 채팅 행 하단 전체 폭에 텍스트 없는 카운트다운 바를 붙입니다. @private */
+    #inlineCoreTimer(row, remaining) {
+        const left = Math.max(0, number(remaining));
+        const maximum = Math.max(.001, number(this.context.timerMaximums?.core, left || 1));
+        const ratio = clamp(left / maximum, 0, 1);
+        const bar = {
+            x: row.x,
+            y: row.y + row.h - Math.max(4, row.h * .14),
+            w: row.w,
+            h: Math.max(4, row.h * .14)
+        };
+        this.#drawContent({
+            shape: 'roundRect', ...bar, radius: 999,
+            fill: COLORS.DARK_GLASS,
+            alpha: .78,
+            clipRect: row
+        });
+        if (ratio > 0) {
+            this.#drawContent({
+                shape: 'roundRect',
+                x: bar.x,
+                y: bar.y,
+                w: Math.max(2, bar.w * ratio),
+                h: bar.h,
+                radius: 999,
+                fill: COLORS.NEGATIVE,
+                shadowBlur: 4,
+                shadowColor: COLORS.NEGATIVE,
+                clipRect: row
+            });
         }
-        this.#label(`CORE · ${text(core.author, 24)}`, rect.x + rect.w * .055, rect.y + rect.h * .18, this.#size(UI.SMALL_FONT_WH), COLORS.NEGATIVE, { baseline: 'middle', weight: 950 });
-        this.#wrapped(core.text, rect.x + rect.w * .055, rect.y + rect.h * .32, rect.w * .89, this.#size(UI.BODY_FONT_WH), COLORS.INK, 2);
-        this.#timer({ x: rect.x + rect.w * .055, y: rect.y + rect.h * .84, w: rect.w * .89, h: Math.max(8, rect.h * .08) }, core.timeRemainingSeconds, c.timerMaximums.core, COLORS.NEGATIVE, '핵심', COLORS.INK);
     }
 
     /** 방송 결과 요약과 재시작 버튼을 그립니다. @private */
@@ -773,7 +831,7 @@ export class AeroLiveRenderer {
         const report = [
             ['핵심 채팅 성공', `${integer(core.succeeded ?? s.coreChatsSucceeded)}/${integer(core.presented ?? s.coreChatsPresented)}건`, COLORS.DEEP_BLUE],
             ['긍정 채팅 오강퇴', `${integer(core.wrongPositiveKicks ?? s.wrongPositiveKicks)}건`, COLORS.NEGATIVE],
-            ['시청자 강퇴', `${integer(moderation.kicksUsed ?? s.kicksUsed)}회`, COLORS.NEGATIVE],
+            ['강퇴 · 삭제', `${integer(moderation.kicksUsed ?? s.kicksUsed)}회 · ${integer(moderation.deletedMessages ?? s.coreChatsDeleted)}건`, COLORS.NEGATIVE],
             ['후원 적절 대응', `${integer(donations.appropriate ?? s.donationsAppropriate)}건`, COLORS.POSITIVE],
             ['후원 실패', `${integer(donations.failed ?? s.donationFailures)}건`, COLORS.WARNING],
             ['후원 총 발생', `${integer(donations.presented ?? s.donationsPresented)}건`, COLORS.AQUA]
