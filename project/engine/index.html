@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" type="text/css" href="./style.css">
+    <link rel="icon" type="image/ico" href="../asset/icon/logo.ico">
+    <script type="importmap">
+    {
+        "imports": {
+            "engine/": "./script/",
+            "core/": "./script/core/",
+            "display/": "./script/display/",
+            "scene/": "./script/scene/",
+            "simulation/": "./script/simulation/",
+            "ui/": "./script/ui/",
+            "util/": "./script/util/",
+            "animation/": "./script/animation/",
+            "input/": "./script/input/",
+            "sound/": "./script/sound/",
+            "save/": "./script/save/",
+            "data/": "./script/data/",
+            "object/": "./script/object/",
+            "debug/": "./script/debug/",
+            "overlay/": "./script/overlay/"
+        }
+    }
+    </script>
+</head>
+
+<body>
+    <canvas class="canvas" id="background"></canvas>
+    <canvas class="canvas" id="object"></canvas>
+    <canvas class="canvas" id="effect"></canvas>
+    <canvas class="canvas" id="texteffect"></canvas>
+    <canvas class="canvas" id="ui"></canvas>
+    <div id="overlaylayerhost"></div>
+    <canvas class="canvas" id="vignette"></canvas>
+    <canvas class="canvas" id="top"></canvas>
+    <script type="module" src="./script/main.js"></script>
+    <script type="module" src="./script/nw-setup.js"></script>
+</body>
+
+</html>

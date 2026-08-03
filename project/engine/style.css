@@ -1,0 +1,82 @@
+body {
+    margin: 0;
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    background-color: #000000;
+}
+
+html {
+    cursor: none;
+}
+
+.canvas {
+    position: absolute;
+    border-radius: 0;
+    transform-origin: center;
+    image-rendering: pixelated;
+}
+
+#background {
+    z-index: 0;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+#object {
+    z-index: 10;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+#effect {
+    z-index: 20;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+#texteffect {
+    z-index: 30;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+#ui {
+    z-index: 40;
+    background-color: rgba(0, 0, 0, 0);
+}
+
+#overlaylayerhost {
+    z-index: 60;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+#vignette {
+    z-index: 50;
+    background-color: rgba(0, 0, 0, 0);
+    pointer-events: none;
+}
+
+#top {
+    z-index: 80;
+    background-color: rgba(0, 0, 0, 0);
+    pointer-events: none;
+}
+
+.dynamic-canvas {
+    position: absolute;
+    background-color: rgba(0, 0, 0, 0);
+    image-rendering: pixelated;
+}
+
+@font-face {
+    font-family: 'Pretendard Variable';
+    font-weight: 45 920;
+    font-style: normal;
+    font-display: swap;
+    src: url('../asset/font/PretendardVariable.woff2') format('woff2-variations');
+}

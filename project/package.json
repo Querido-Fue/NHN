@@ -1,0 +1,16 @@
+{
+    "name": "aero_live_prototype",
+    "version": "0.4",
+    "main": "engine/index.html",
+    "nodejs": true,
+    "js-flags": "",
+    "window": {
+        "title": "AERO LIVE Prototype",
+        "toolbar": false,
+        "fullscreen": false,
+        "position": "center",
+        "min_width": 1280,
+        "min_height": 720,
+        "icon": "asset/icon/logo.png"
+    }
+}

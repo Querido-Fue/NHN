@@ -1,0 +1,61 @@
+import { ColorSchemes } from 'display/_theme_handler.js';
+import { render, getWW } from 'display/display_system.js';
+import { getMouseInput, getMouseFocus } from 'input/input_system.js';
+import { createFontString } from 'util/font_util.js';
+
+
+/**
+ * @class MouseDebugger
+ * @description 마우스 좌표/버튼/포커스 상태를 화면에 표시합니다.
+ */
+export class MouseDebugger {
+    constructor() {
+    }
+
+    /**
+     * 마우스 디버거 업데이트
+     */
+    update() {
+    }
+
+    /**
+     * 마우스 정보를 화면에 그립니다.
+     */
+    draw() {
+        const x = getMouseInput("x");
+        const y = getMouseInput("y");
+        const lineHeight = 20;
+        const startX = x + 50;
+        const startY = y + 50;
+
+        const lines = [
+            `${x.toFixed(1)}, ${y.toFixed(1)}`,
+            `left: [${getMouseInput("left").join(", ")}]`,
+            `right: [${getMouseInput("right").join(", ")}]`,
+            `middle: [${getMouseInput("middle").join(", ")}]`,
+            `focus: ${getMouseFocus().join(", ")}`
+        ];
+
+        const WW = getWW();
+
+        const fontSize = WW * 0.008;
+        const font = createFontString({
+            weight: 300,
+            sizePx: fontSize,
+            family: 'Pretendard Variable'
+        });
+
+        lines.forEach((text, i) => {
+            render('top', {
+                shape: 'text',
+                text: text,
+                x: startX,
+                y: startY + (i * lineHeight),
+                font,
+                fill: ColorSchemes.Debug.Fill,
+                align: 'left',
+                baseline: 'middle'
+            });
+        });
+    }
+}

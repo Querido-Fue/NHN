@@ -1,0 +1,262 @@
+let mathUtilInstance = null;
+
+const FULL_TURN_DEG = 360;
+const STRAIGHT_DEG = 180;
+const DEGREES_TO_RADIANS = Math.PI / 180;
+
+/**
+ * 도 단위 각도를 라디안으로 변환합니다.
+ * @param {number} degrees - 변환할 각도입니다.
+ * @returns {number} 라디안 값입니다.
+ */
+export function toRadians(degrees) {
+    return (Number.isFinite(degrees) ? degrees : 0) * DEGREES_TO_RADIANS;
+}
+
+/**
+ * 도 단위 각도를 -180~180 범위로 정규화합니다.
+ * @param {number} degrees - 정규화할 각도입니다.
+ * @param {boolean} [preferPositiveStraight=false] - -180도를 180도로 보정할지 여부입니다.
+ * @returns {number} 정규화된 각도입니다.
+ */
+export function normalizeDegrees(degrees, preferPositiveStraight = false) {
+    if (!Number.isFinite(degrees)) {
+        return 0;
+    }
+
+    let normalized = degrees % FULL_TURN_DEG;
+    if (normalized > STRAIGHT_DEG) normalized -= FULL_TURN_DEG;
+    if (normalized < -STRAIGHT_DEG || (preferPositiveStraight && normalized <= -STRAIGHT_DEG)) {
+        normalized += FULL_TURN_DEG;
+    }
+    return normalized;
+}
+
+/**
+ * 2D 좌표를 라디안 각도만큼 회전합니다.
+ * @param {number} x - X 좌표입니다.
+ * @param {number} y - Y 좌표입니다.
+ * @param {number} radians - 회전 라디안입니다.
+ * @returns {{x: number, y: number}} 회전된 좌표입니다.
+ */
+export function rotatePoint(x, y, radians) {
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    return {
+        x: (x * cos) - (y * sin),
+        y: (x * sin) + (y * cos)
+    };
+}
+
+/**
+ * @class MathUtil
+ * @description 엔진에서 사용되는 수학 관련 유틸리티 함수들을 제공하는 클래스입니다.
+ * 랜덤 값 생성, 각도 변환, 2D 좌표 변환, Simplex Noise 등을 포함합니다.
+ */
+export class MathUtil {
+    constructor() {
+        mathUtilInstance = this;
+    }
+
+    /**
+     * 시드를 32bit 정수로 변환합니다.
+     * @param {string|number} seed - 시드 값
+     * @returns {number} 32bit 정수 시드
+     */
+    _seedToUint32(seed) {
+        const seedString = String(seed);
+        let hash = 2166136261;
+        for (let i = 0; i < seedString.length; i++) {
+            hash ^= seedString.charCodeAt(i);
+            hash = Math.imul(hash, 16777619);
+        }
+        return hash >>> 0;
+    }
+
+    /**
+     * 시드 기반 난수 생성 함수를 반환합니다.
+     * @param {string|number|undefined|null} seed - 시드 값
+     * @returns {() => number} 0 이상 1 미만 난수 생성 함수
+     */
+    _getRandomGenerator(seed) {
+        if (seed === undefined || seed === null) {
+            return Math.random;
+        }
+
+        let state = this._seedToUint32(seed);
+        if (state === 0) {
+            state = 0x6D2B79F5;
+        }
+
+        return () => {
+            state = (state + 0x6D2B79F5) >>> 0;
+            let value = state;
+            value = Math.imul(value ^ (value >>> 15), value | 1);
+            value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+            return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+
+    /**
+     * 최소값과 최대값 사이의 정수 난수를 반환합니다.
+     * @param {number} min - 최소값
+     * @param {number} max - 최대값
+     * @param {string|number} [seed] - 시드 (같은 시드면 같은 결과)
+     * @returns {number} 랜덤 정수
+     */
+    randInt(min, max, seed) {
+        const randomGenerator = this._getRandomGenerator(seed);
+        return Math.floor(randomGenerator() * (max - min + 1)) + min;
+    }
+
+    /**
+     * 최소값과 최대값 사이의 실수 난수를 반환합니다.
+     * @param {number} min - 최소값
+     * @param {number} max - 최대값
+     * @param {string|number} [seed] - 시드 (같은 시드면 같은 결과)
+     * @returns {number} 랜덤 실수
+     */
+    random(min = 0, max = 1, seed) {
+        const randomGenerator = this._getRandomGenerator(seed);
+        return randomGenerator() * (max - min) + min;
+    }
+
+    /**
+     * 리스트에서 number 개의 값을 랜덤 추출하여 배열로 반환합니다.
+     * @param {Array<*>} list - 추출 대상 리스트
+     * @param {number} [number=1] - 추출 개수
+     * @param {string|number} [seed] - 시드 (같은 시드면 같은 결과)
+     * @param {boolean} [repeat=false] - 중복 허용 여부
+     * @returns {Array<*>} 추출된 값 리스트
+     */
+    randPick(list, number = 1, seed, repeat = false) {
+        if (!Array.isArray(list)) {
+            console.warn("[MathUtil.randPick] list is required.");
+            return [];
+        }
+
+        if (list.length === 0) {
+            return [];
+        }
+
+        let pickCount = Number.isFinite(number) ? Math.floor(number) : 1;
+        pickCount = Math.max(0, pickCount);
+
+        if (!repeat && pickCount > list.length) {
+            console.warn("[MathUtil.randPick] number is larger than list length; clamped to list length.");
+            pickCount = list.length;
+        }
+
+        const randomGenerator = this._getRandomGenerator(seed);
+
+        if (repeat) {
+            const result = [];
+            for (let i = 0; i < pickCount; i++) {
+                const index = Math.floor(randomGenerator() * list.length);
+                result.push(list[index]);
+            }
+            return result;
+        }
+
+        const pool = [...list];
+        const result = [];
+
+        for (let i = 0; i < pickCount; i++) {
+            const index = Math.floor(randomGenerator() * pool.length);
+            result.push(pool[index]);
+            pool.splice(index, 1);
+        }
+
+        return result;
+    }
+
+    /**
+     * 도(Degree)를 라디안(Radian)으로 변환합니다.
+     * @param {number} degree - 각도 (도)
+     * @returns {number} 라디안 값
+     */
+    degToRad(degree) {
+        return degree * (Math.PI / 180);
+    }
+
+    /**
+     * 라디안(Radian)을 도(Degree)로 변환합니다.
+     * @param {number} rad - 각도 (라디안)
+     * @returns {number} 도 값
+     */
+    radToDeg(rad) {
+        return rad * (180 / Math.PI);
+    }
+
+    /**
+     * 벡터를 각도(도)로 변환합니다.
+     * @param {{x:number, y:number}} vec - 벡터
+     * @returns {number} 각도 (도)
+     */
+    vecToDeg(vec) {
+        return this.radToDeg(Math.atan2(vec.y, vec.x));
+    }
+
+    /**
+     * 벡터를 각도(라디안)로 변환합니다.
+     * @param {{x:number, y:number}} vec - 벡터
+     * @returns {number} 각도 (라디안)
+     */
+    vecToRad(vec) {
+        return this.degToRad(this.vecToDeg(vec));
+    }
+
+    /**
+     * 각도(도)를 단위 벡터로 변환합니다.
+     * @param {number} degree - 각도 (도)
+     * @returns {{x:number, y:number}} 단위 벡터
+     */
+    degToVec(degree) {
+        return { x: Math.cos(this.degToRad(degree)), y: Math.sin(this.degToRad(degree)) }
+    }
+
+    /**
+     * 각도(라디안)를 단위 벡터로 변환합니다.
+     * @param {number} rad - 각도 (라디안)
+     * @returns {{x:number, y:number}} 단위 벡터
+     */
+    radToVec(rad) {
+        return { x: Math.cos(rad), y: Math.sin(rad) }
+    }
+
+    /**
+     * 지수 함수를 사용하여 값을 감소시킵니다.
+     * @param {number} value - 감소시킬 값
+     * @param {number} max - 최대값
+     * @returns {number} 감소된 값
+     */
+    decay(value, max) {
+        if (max === 0) return 0;
+        const entry = value / max;
+        const sigmoid = 2 * (1 / (1 + Math.exp(-entry)) - 0.5);
+        return sigmoid * max;
+    }
+
+    /**
+     * 값을 min~max 범위로 제한합니다.
+     * min 또는 max가 -1이면 해당 방향 제한을 적용하지 않습니다.
+     * @param {number} value - 제한할 값
+     * @param {number} min - 최솟값 (-1이면 하한 없음)
+     * @param {number} max - 최댓값 (-1이면 상한 없음)
+     * @returns {number} 범위 내로 제한된 값
+     */
+    cap(value, min, max) {
+        let result = value;
+        if (min !== -1) result = Math.max(result, min);
+        if (max !== -1) result = Math.min(result, max);
+        return result;
+    }
+}
+
+/**
+ * MathUtil 싱글톤 인스턴스를 반환합니다.
+ * @returns {MathUtil} MathUtil 인스턴스
+ */
+export function mathUtil() {
+    return mathUtilInstance;
+}

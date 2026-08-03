@@ -1,10 +1,12 @@
 *
 
 !.gitignore
-
-!project/asset/**
-!project/asset/
-!project/engine/**
+!project/
 !project/engine/
+!project/engine/**
+!project/asset/
+!project/asset/**
 !project/package-lock.json
-!project/package.json
+!project/license
+!project/license/**
+!package.json
