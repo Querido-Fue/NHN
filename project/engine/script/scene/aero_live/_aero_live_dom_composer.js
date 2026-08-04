@@ -17,6 +17,9 @@ export class AeroLiveDomComposer {
         this.onSubmit = typeof options.onSubmit === 'function' ? options.onSubmit : () => {};
         this.onEscape = typeof options.onEscape === 'function' ? options.onEscape : () => {};
         this.destroyed = false;
+        this.compositionActive = false;
+        this.compositionSubmitSuppressed = false;
+        this.compositionSuppressionGeneration = 0;
         this.#createDom();
     }
 
@@ -39,7 +42,7 @@ export class AeroLiveDomComposer {
 
     /**
      * DOM form을 현재 Canvas 사각형과 입력 상태에 맞춥니다.
-     * @param {{rect:{x:number,y:number,w:number,h:number},visible:boolean,disabled:boolean,pending:boolean,messagesRemaining:number,uiWidth:number,viewportHeight:number}} state - 표시 상태입니다.
+     * @param {{rect:{x:number,y:number,w:number,h:number},visible:boolean,disabled:boolean,pending:boolean,messagesRemaining:number,playerName?:string,uiWidth:number,viewportHeight:number}} state - 표시 상태입니다.
      */
     sync(state) {
         if (this.destroyed || !this.form || !state?.rect) {
@@ -74,7 +77,9 @@ export class AeroLiveDomComposer {
         });
         Object.assign(this.maskLabel.style, {
             padding: `0 ${cssPixel(uiWidth * 0.005)}`,
-            fontSize: cssPixel(viewportHeight * UI.SMALL_FONT_WH / 100)
+            fontSize: cssPixel(viewportHeight * UI.SMALL_FONT_WH / 100),
+            overflow: 'hidden',
+            textOverflow: 'ellipsis'
         });
         Object.assign(this.input.style, {
             padding: `0 ${cssPixel(uiWidth * 0.006)}`,
@@ -90,6 +95,7 @@ export class AeroLiveDomComposer {
 
         this.input.disabled = state.disabled;
         this.sendButton.disabled = state.disabled;
+        this.maskLabel.textContent = String(state.playerName || '플레이어');
         this.input.placeholder = state.pending
             ? 'AI가 의도를 판정하고 있습니다…'
             : (state.messagesRemaining <= 0
@@ -113,8 +119,26 @@ export class AeroLiveDomComposer {
         this.maskLabel = null;
         this.input = null;
         this.sendButton = null;
+        this.compositionActive = false;
+        this.compositionSubmitSuppressed = false;
+        this.compositionSuppressionGeneration += 1;
         this.onSubmit = () => {};
         this.onEscape = () => {};
+    }
+
+    /** IME 확정 이벤트와 같은 macrotask의 form 제출을 한 번 억제합니다. @private */
+    #suppressCompositionSubmit() {
+        this.compositionSubmitSuppressed = true;
+        this.compositionSuppressionGeneration += 1;
+        const generation = this.compositionSuppressionGeneration;
+        const schedule = typeof window !== 'undefined' && typeof window.setTimeout === 'function'
+            ? window.setTimeout.bind(window)
+            : setTimeout;
+        schedule(() => {
+            if (!this.destroyed && generation === this.compositionSuppressionGeneration) {
+                this.compositionSubmitSuppressed = false;
+            }
+        }, 0);
     }
 
     /**
@@ -146,7 +170,7 @@ export class AeroLiveDomComposer {
         });
 
         this.maskLabel = document.createElement('span');
-        this.maskLabel.textContent = AERO_CONSTANTS.INPUT.MASK_LABEL;
+        this.maskLabel.textContent = '플레이어';
         Object.assign(this.maskLabel.style, {
             display: 'flex',
             alignItems: 'center',
@@ -202,13 +226,29 @@ export class AeroLiveDomComposer {
         this.form.append(this.maskLabel, this.input, this.sendButton);
         this.form.addEventListener('submit', (event) => {
             event.preventDefault();
+            if (this.compositionActive || this.compositionSubmitSuppressed) {
+                return;
+            }
             this.onSubmit(this.getValue());
+        });
+        this.input.addEventListener('compositionstart', () => {
+            this.compositionActive = true;
+        });
+        this.input.addEventListener('compositionend', () => {
+            this.compositionActive = false;
+            this.#suppressCompositionSubmit();
         });
         this.input.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
-                if (event.isComposing) {
+                if (event.isComposing
+                    || this.compositionActive
+                    || event.keyCode === 229
+                    || this.compositionSubmitSuppressed) {
+                    this.#suppressCompositionSubmit();
+                    event.stopPropagation();
                     return;
                 }
+                this.compositionSubmitSuppressed = false;
                 event.preventDefault();
                 event.stopPropagation();
                 if (!event.shiftKey) {

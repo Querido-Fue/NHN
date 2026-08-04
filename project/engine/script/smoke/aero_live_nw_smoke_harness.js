@@ -5,6 +5,12 @@ const CAPTURE_WIDTH = 1280;
 const CAPTURE_HEIGHT = 720;
 const WAIT_TIMEOUT_MS = 15000;
 const MAX_CORE_FAST_FORWARD_TICKS = 60 * 210;
+const TEST_PLAYER_NAME = '별빛단장';
+const TEST_PLAYER_MESSAGE = `${TEST_PLAYER_NAME} 최고야`;
+const MODEL_PLAYER_MESSAGE = '{playerName} 최고야';
+const MODEL_HERO_REPLY = '{playerName}님 고마워!';
+const MODEL_CALLBACK_TEXT = '아까 {playerName} 말 좋았어';
+const MODEL_REACTION_TEXT = '{playerName} 응원 좋다';
 const errors = [];
 const warnings = [];
 const nodeRequire = window.require;
@@ -305,19 +311,96 @@ function waitForPaint() {
 }
 
 /**
- * DOM Composer의 화면 내 정렬 상태를 직렬화합니다.
+ * 실제 CanvasRenderingContext2D.fillText 호출을 수집해 최종 로컬 치환 결과를 검증합니다.
+ * @returns {{reset:()=>void,snapshot:()=>string[],restore:()=>void}} 텍스트 수집기입니다.
+ */
+function createCanvasTextCapture() {
+    const entries = [];
+    const patches = [];
+    const constructorNames = [
+        'CanvasRenderingContext2D',
+        'OffscreenCanvasRenderingContext2D'
+    ];
+    for (const constructorName of constructorNames) {
+        const prototype = globalThis[constructorName]?.prototype;
+        const original = prototype?.fillText;
+        if (!prototype || typeof original !== 'function') {
+            continue;
+        }
+        const wrapped = function (...args) {
+            entries.push(String(args[0] ?? ''));
+            return Reflect.apply(original, this, args);
+        };
+        try {
+            prototype.fillText = wrapped;
+            if (prototype.fillText === wrapped) {
+                patches.push({ prototype, original });
+            }
+        } catch {
+            // 지원하지 않는 context 종류는 건너뛰고 일반 Canvas context를 사용합니다.
+        }
+    }
+    if (patches.length === 0) {
+        throw new Error('NW_SMOKE_TEXT_CAPTURE_UNAVAILABLE');
+    }
+    return {
+        reset() {
+            entries.length = 0;
+        },
+        snapshot() {
+            return [...new Set(entries.map((entry) => entry.trim()).filter(Boolean))].slice(0, 320);
+        },
+        restore() {
+            for (const { prototype, original } of patches) {
+                prototype.fillText = original;
+            }
+            patches.length = 0;
+            entries.length = 0;
+        }
+    };
+}
+
+/** DOM form의 실제 input과 submit button을 사용해 값을 제출합니다. */
+function submitDomForm(selector, value) {
+    const form = document.querySelector(selector);
+    const input = form?.querySelector('input[type="text"]');
+    const submitButton = form?.querySelector('button[type="submit"]');
+    if (!form || !input || !submitButton) {
+        throw new Error('NW_SMOKE_DOM_FORM_NOT_READY');
+    }
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    submitButton.click();
+}
+
+/** `{playerName}` 템플릿을 테스트 닉네임으로 한 번 치환합니다. */
+function resolvePlayerNameTemplate(value) {
+    return String(value ?? '').replace(/\{playerName\}/gu, TEST_PLAYER_NAME);
+}
+
+/** 대소문자와 정규화 차이를 무시하고 문자열 포함 여부를 검사합니다. */
+function includesNormalized(value, candidate) {
+    return String(value ?? '')
+        .normalize('NFKC')
+        .toLocaleLowerCase('ko-KR')
+        .includes(String(candidate ?? '').normalize('NFKC').toLocaleLowerCase('ko-KR'));
+}
+
+/**
+ * DOM form 하나의 화면 내 정렬 상태를 직렬화합니다.
  * @param {object} scene - 현재 Scene입니다.
+ * @param {string} selector - form CSS selector입니다.
+ * @param {object} logicalRect - 대응하는 Scene Canvas 사각형입니다.
  * @returns {object} DOM 검사 결과입니다.
  */
-function inspectComposer(scene) {
-    const form = document.querySelector('.aero-live-composer');
+function inspectPositionedForm(scene, selector, logicalRect) {
+    const form = document.querySelector(selector);
     if (!form) {
         return { exists: false };
     }
     const rect = form.getBoundingClientRect();
     const uiCanvas = document.querySelector('#ui');
     const canvasRect = uiCanvas?.getBoundingClientRect?.();
-    const logicalRect = scene.layout?.composer;
     const expectedRect = canvasRect && logicalRect && scene.WW > 0 && scene.WH > 0
         ? {
             x: canvasRect.left + (logicalRect.x / scene.WW) * canvasRect.width,
@@ -356,6 +439,20 @@ function inspectComposer(scene) {
     };
 }
 
+/** 자유 채팅 Composer의 화면 내 정렬 상태를 직렬화합니다. */
+function inspectComposer(scene) {
+    return inspectPositionedForm(scene, '.aero-live-composer', scene.layout?.composer);
+}
+
+/** 닉네임 Composer의 화면 내 정렬 상태를 직렬화합니다. */
+function inspectNicknameComposer(scene) {
+    return inspectPositionedForm(
+        scene,
+        '.aero-live-nickname-composer',
+        scene.layout?.nicknameComposer
+    );
+}
+
 /**
  * 완성된 리포트를 같은 디렉터리의 임시 파일에서 원자적으로 교체합니다.
  * @param {{reportPath:string}} paths - 검증된 출력 경로입니다.
@@ -379,6 +476,7 @@ async function captureState(state) {
         'utf8'
     );
     await forceCompositorRefresh(state.nativeWindow, state.game);
+    state.textCapture?.reset?.();
     renderNow(state.game, state.scene);
     await waitForPaint();
     renderNow(state.game, state.scene);
@@ -388,6 +486,7 @@ async function captureState(state) {
     await capturePng(state.nativeWindow, outputPath);
     renderNow(state.game, state.scene);
     await waitForPaint();
+    const renderedTexts = state.textCapture?.snapshot?.() || [];
     const capture = await capturePng(state.nativeWindow, outputPath);
     fs.writeFileSync(
         path.join(state.paths.outputDirectory, 'stage.txt'),
@@ -401,16 +500,19 @@ async function captureState(state) {
         status: state.scene.snapshot?.status || 'unknown',
         window: { width: window.innerWidth, height: window.innerHeight },
         composer: inspectComposer(state.scene),
+        nicknameComposer: inspectNicknameComposer(state.scene),
+        renderedTexts,
         ...capture
     };
 }
 
 /**
- * 실제 NW.js AERO LIVE 창에서 네 화면과 구조 검사를 수행합니다.
+ * 실제 NW.js AERO LIVE 창에서 닉네임부터 결과까지 다섯 화면과 구조 검사를 수행합니다.
  */
 async function runSmoke() {
     let paths;
     let report;
+    let textCapture;
     try {
         paths = resolveOutputPaths();
         fs.writeFileSync(path.join(paths.outputDirectory, 'stage.txt'), 'run-start\n', 'utf8');
@@ -433,26 +535,81 @@ async function runSmoke() {
         await prepareCaptureWindow(nativeWindow, game);
         fs.writeFileSync(path.join(paths.outputDirectory, 'stage.txt'), 'capture-window-ready\n', 'utf8');
 
-        scene.aiService.generateChatBatch = async () => ({ chats: [], source: 'nw-smoke-disabled' });
-        scene.aiService.classifyPlayerMessage = async () => ({
-            intent: 'blocked',
-            confidence: 0,
-            reason: 'NW smoke에서는 외부 판정을 호출하지 않습니다.',
-            reaction_chats: [],
-            source: 'technical-failure'
-        });
+        const chatRequestContexts = [];
+        const intentRequestContexts = [];
+        scene.aiService.generateChatBatch = async (context) => {
+            chatRequestContexts.push(structuredClone(context));
+            return { chats: [], source: 'nw-smoke-disabled' };
+        };
+        scene.aiService.classifyPlayerMessage = async (context) => {
+            intentRequestContexts.push(structuredClone(context));
+            const viewerId = Array.isArray(context?.viewerIds) && context.viewerIds.length > 0
+                ? context.viewerIds[0]
+                : 'v001';
+            return {
+                intent: 'praise',
+                confidence: 97,
+                reason: '{playerName}의 응원이 반영되었습니다.',
+                hero_reply: MODEL_HERO_REPLY,
+                hero_expression: 'happy',
+                callback_text: MODEL_CALLBACK_TEXT,
+                reaction_chats: [{
+                    viewer_id: viewerId,
+                    sentiment: 'positive',
+                    text: MODEL_REACTION_TEXT
+                }],
+                source: 'nw-smoke-echo'
+            };
+        };
+        textCapture = createCanvasTextCapture();
 
         const captures = [];
         captures.push(await captureState({
-            game, scene, nativeWindow, paths, order: '01', name: 'topics'
+            game, scene, nativeWindow, paths, textCapture, order: '01', name: 'nickname'
         }));
 
-        scene.snapshot = scene.runtime.startBroadcast('game');
-        scene.mode = 'live';
+        submitDomForm('.aero-live-nickname-composer', TEST_PLAYER_NAME);
+        await waitFor(
+            () => scene.mode === 'topicSelect' && scene.playerName === TEST_PLAYER_NAME,
+            'nickname-submit'
+        );
+        scene.update();
+        captures.push(await captureState({
+            game, scene, nativeWindow, paths, textCapture, order: '02', name: 'topics'
+        }));
+
+        const topicButton = scene.topicButtons?.[0];
+        if (!topicButton?.visible || !topicButton?.clickAble || typeof topicButton.onClick !== 'function') {
+            throw new Error('NW_SMOKE_TOPIC_BUTTON_NOT_READY');
+        }
+        topicButton.onClick();
+        await waitFor(
+            () => scene.mode === 'live' && scene.snapshot?.status === 'live',
+            'broadcast-start'
+        );
+        await Promise.resolve();
+        scene.update();
+
+        submitDomForm('.aero-live-composer', TEST_PLAYER_MESSAGE);
+        await waitFor(
+            () => scene.inputClassificationPending === false
+                && Array.isArray(scene.echoMemories)
+                && scene.echoMemories.length > 0,
+            'player-echo'
+        );
+        const echoMemory = structuredClone(scene.echoMemories.at(-1));
+        const playerChat = structuredClone(
+            scene.snapshot?.chats?.find((chat) => chat.source === 'player') || null
+        );
+        const reactionChat = structuredClone(
+            scene.snapshot?.chats?.find((chat) => chat.source === 'nw-smoke-echo') || null
+        );
+
         let liveFixedTicks = 0;
         while (liveFixedTicks < MAX_CORE_FAST_FORWARD_TICKS
             && scene.snapshot?.status === 'live'
-            && !scene.snapshot?.activeCoreChat) {
+            && (!scene.snapshot?.activeCoreChat
+                || !scene.snapshot?.chats?.some((chat) => chat.source === 'echo-callback'))) {
             scene.fixedUpdate();
             liveFixedTicks += 1;
         }
@@ -468,11 +625,14 @@ async function runSmoke() {
         const inlineCoreChat = scene.snapshot?.chats?.find(
             (chat) => String(chat?.coreChatId || '') === activeCoreChatId
         ) || null;
+        const echoCallbackChat = scene.snapshot?.chats?.find(
+            (chat) => chat.source === 'echo-callback'
+        ) || null;
         const coreRowButton = scene.coreRowButtons?.find(
             (button) => button.visible
                 && String(button.aeroData?.coreChatId || '') === activeCoreChatId
         );
-        if (!activeCoreChatId || !inlineCoreChat || !coreRowButton) {
+        if (!activeCoreChatId || !inlineCoreChat || !echoCallbackChat || !coreRowButton) {
             throw new Error('NW_SMOKE_INLINE_CORE_NOT_READY');
         }
         coreRowButton.onClick();
@@ -490,23 +650,76 @@ async function runSmoke() {
             selectedCoreChatId: String(scene.selectedCoreChatId || ''),
             visibleCoreRowButtonCount: scene.coreRowButtons
                 ?.filter((button) => button.visible).length || 0,
-            visibleCoreActionIds
+            visibleCoreActionIds,
+            playerChatTemplate: playerChat?.text || '',
+            reactionChatTemplate: reactionChat?.text || '',
+            callbackChatTemplate: echoCallbackChat.text || '',
+            heroReplyTemplate: echoMemory?.heroReply || '',
+            heroExpression: echoMemory?.expression || ''
         };
         captures.push(await captureState({
-            game, scene, nativeWindow, paths, order: '02', name: 'live'
+            game, scene, nativeWindow, paths, textCapture, order: '03', name: 'live'
         }));
 
-        scene.earlyEndModalOpen = true;
+        scene.endButton?.onClick?.();
+        await waitFor(() => scene.earlyEndModalOpen === true, 'early-end-modal-open');
         captures.push(await captureState({
-            game, scene, nativeWindow, paths, order: '03', name: 'early-end-modal'
+            game, scene, nativeWindow, paths, textCapture, order: '04', name: 'early-end-modal'
         }));
 
-        scene.earlyEndModalOpen = false;
-        const earlyEnd = scene.runtime.requestEarlyEnd();
-        scene.fixedUpdate();
+        scene.modalConfirmButton?.onClick?.();
+        await waitFor(
+            () => scene.mode === 'results' && scene.snapshot?.status === 'ended',
+            'early-end-confirm'
+        );
         captures.push(await captureState({
-            game, scene, nativeWindow, paths, order: '04', name: 'results'
+            game, scene, nativeWindow, paths, textCapture, order: '05', name: 'results'
         }));
+
+        const allAiContexts = [...chatRequestContexts, ...intentRequestContexts];
+        const serializedAiContexts = allAiContexts.map((context) => JSON.stringify(context));
+        const intentMessage = intentRequestContexts[0]?.message || '';
+        const privacy = {
+            chatRequestCount: chatRequestContexts.length,
+            intentRequestCount: intentRequestContexts.length,
+            intentMessage,
+            actualNameAbsentFromAiContexts: serializedAiContexts.every(
+                (serialized) => !includesNormalized(serialized, TEST_PLAYER_NAME)
+            ),
+            playerNameFieldAbsentFromAiContexts: allAiContexts.every(
+                (context) => !Object.prototype.hasOwnProperty.call(context || {}, 'playerName')
+            ),
+            tokenPresentInIntentMessage: includesNormalized(intentMessage, '{playerName}')
+        };
+        const liveRenderedTexts = captures.find((capture) => capture.name === 'live')?.renderedTexts || [];
+        const resultRenderedTexts = captures.find((capture) => capture.name === 'results')?.renderedTexts || [];
+        const echo = {
+            heroReplyTemplate: echoMemory?.heroReply || '',
+            heroExpression: echoMemory?.expression || '',
+            callbackTemplate: echoCallbackChat.text || '',
+            reactionTemplate: reactionChat?.text || '',
+            resultPlayerMessageTemplate: echoMemory?.playerMessage || '',
+            resolvedHeroReply: resolvePlayerNameTemplate(echoMemory?.heroReply),
+            resolvedCallback: resolvePlayerNameTemplate(echoCallbackChat.text),
+            heroReplyRendered: liveRenderedTexts.some((value) => includesNormalized(
+                value,
+                resolvePlayerNameTemplate(echoMemory?.heroReply)
+            )),
+            callbackRendered: liveRenderedTexts.some((value) => includesNormalized(
+                value,
+                resolvePlayerNameTemplate(echoCallbackChat.text)
+            )),
+            resultPlayerMemoryRendered: resultRenderedTexts.some((value) => (
+                includesNormalized(value, TEST_PLAYER_NAME)
+                && includesNormalized(value, '최고야')
+            )),
+            resultHeroMemoryRendered: resultRenderedTexts.some((value) => (
+                includesNormalized(value, TEST_PLAYER_NAME)
+                && includesNormalized(value, '고마워')
+            )),
+            unresolvedTokenAbsentFromRenderedTexts: [...liveRenderedTexts, ...resultRenderedTexts]
+                .every((value) => !includesNormalized(value, '{playerName}'))
+        };
 
         const canvasStates = [...document.querySelectorAll('canvas')].map((canvas) => ({
             id: canvas.id,
@@ -530,10 +743,17 @@ async function runSmoke() {
                 displayScaleFactor: getDisplayScaleFactor()
             },
             heroAssets: scene.renderer?.getHeroAssetStatus?.() || null,
+            identity: {
+                submittedThroughDom: true,
+                playerName: TEST_PLAYER_NAME,
+                scenePlayerNameMatches: scene.playerName === TEST_PLAYER_NAME
+            },
+            privacy,
+            echo,
             liveState: {
                 fallbackChatCount: liveFallbackChatCount,
                 ...liveInteraction,
-                earlyEndAccepted: earlyEnd?.accepted === true
+                earlyEndAccepted: scene.snapshot?.endType === 'early'
             },
             result: {
                 endType: scene.snapshot?.endType,
@@ -551,6 +771,23 @@ async function runSmoke() {
             && report.heroAssets?.readyCount === report.heroAssets?.requestedCount
             && report.heroAssets?.failedCount === 0
             && isValidCaptureViewport(report.viewport.width, report.viewport.height)
+            && report.identity.scenePlayerNameMatches
+            && report.privacy.chatRequestCount > 0
+            && report.privacy.intentRequestCount === 1
+            && report.privacy.intentMessage === MODEL_PLAYER_MESSAGE
+            && report.privacy.actualNameAbsentFromAiContexts
+            && report.privacy.playerNameFieldAbsentFromAiContexts
+            && report.privacy.tokenPresentInIntentMessage
+            && report.echo.heroReplyTemplate === MODEL_HERO_REPLY
+            && report.echo.heroExpression === 'happy'
+            && report.echo.callbackTemplate === MODEL_CALLBACK_TEXT
+            && report.echo.reactionTemplate === MODEL_REACTION_TEXT
+            && report.echo.resultPlayerMessageTemplate === MODEL_PLAYER_MESSAGE
+            && report.echo.heroReplyRendered
+            && report.echo.callbackRendered
+            && report.echo.resultPlayerMemoryRendered
+            && report.echo.resultHeroMemoryRendered
+            && report.echo.unresolvedTokenAbsentFromRenderedTexts
             && report.liveState.fallbackChatCount > 0
             && report.liveState.fixedTicks > 0
             && report.liveState.fixedTicks < MAX_CORE_FAST_FORWARD_TICKS
@@ -563,11 +800,19 @@ async function runSmoke() {
             && report.result.endType === 'early'
             && report.result.hasResult
             && report.captures[0].composer.display === 'none'
-            && report.captures[1].composer.display !== 'none'
-            && report.captures[1].composer.withinViewport
-            && report.captures[1].composer.alignedToCanvas
-            && report.captures[2].composer.display === 'none'
+            && report.captures[0].nicknameComposer.display !== 'none'
+            && report.captures[0].nicknameComposer.withinViewport
+            && report.captures[0].nicknameComposer.alignedToCanvas
+            && report.captures[1].composer.display === 'none'
+            && report.captures[1].nicknameComposer.display === 'none'
+            && report.captures[2].composer.display !== 'none'
+            && report.captures[2].composer.withinViewport
+            && report.captures[2].composer.alignedToCanvas
+            && report.captures[2].nicknameComposer.display === 'none'
             && report.captures[3].composer.display === 'none'
+            && report.captures[3].nicknameComposer.display === 'none'
+            && report.captures[4].composer.display === 'none'
+            && report.captures[4].nicknameComposer.display === 'none'
             && canvasStates.length >= 7
             && canvasStates.every((canvas) => canvas.width > 0 && canvas.height > 0)
             && errors.length === 0
@@ -593,6 +838,12 @@ async function runSmoke() {
         };
         fs.writeFileSync(path.join(paths.outputDirectory, 'stage.txt'), 'caught-error\n', 'utf8');
     } finally {
+        try {
+            textCapture?.restore?.();
+        } catch (error) {
+            errors.push({ type: 'text-capture-restore', message: safeDiagnostic(error) });
+            if (report) report.ok = false;
+        }
         try {
             writeReportAtomic(paths, report);
         } catch (error) {

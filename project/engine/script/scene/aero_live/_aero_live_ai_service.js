@@ -19,13 +19,17 @@ export class AeroLiveAiService {
         this.contract = new AeroLiveLlmContract(this.rules);
         this.controllers = new Set();
         this.chatCache = new Map();
-        this.chatRequestSequence = 0;
-        this.intentRequestSequence = 0;
         this.generation = 0;
-        this.chatBusy = false;
-        this.intentBusy = false;
+        this.requestSequence = 0;
+        this.requestQueue = [];
+        this.activeJob = null;
+        this.maxQueuedRequests = Math.max(
+            1,
+            Number(this.rules.MAX_REQUEST_QUEUE_SIZE) || 32
+        );
         this.destroyed = false;
-        this.status = this.rules.ENABLED === false ? '로컬 모드' : 'AI 준비';
+        this.idleStatus = this.rules.ENABLED === false ? '로컬 모드' : 'AI 준비';
+        this.status = this.idleStatus;
         this.hasReportedKeyError = false;
     }
 
@@ -34,6 +38,7 @@ export class AeroLiveAiService {
      * @returns {string} 상태 문자열입니다.
      */
     getStatus() {
+        this.#refreshStatus();
         return this.status;
     }
 
@@ -43,14 +48,15 @@ export class AeroLiveAiService {
      * @returns {Promise<{chats:Array,source:string}>} 생성 결과입니다.
      */
     async generateChatBatch(context) {
-        if (this.destroyed || this.rules.ENABLED === false) {
-            return { chats: [], source: 'local-only' };
+        if (this.destroyed) {
+            return this.#buildDiscardedChatResult();
         }
-        if (this.chatBusy) {
-            return { chats: [], source: 'busy' };
+        if (this.rules.ENABLED === false) {
+            return { chats: [], source: 'local-only' };
         }
 
         const viewerIds = this.#resolveViewerIds(context);
+        const modelId = this.#resolveModelId('chat');
         const cacheKey = this.#buildCacheKey('chat', {
             topic: context?.topic,
             heroText: context?.heroText,
@@ -63,147 +69,60 @@ export class AeroLiveAiService {
                     sentiment: chat?.sentiment || 'neutral'
                 }))
                 : []
-        });
+        }, modelId);
         const cached = this.chatCache.get(cacheKey);
         if (cached) {
             this.#touchCacheEntry(cacheKey, cached);
-            this.status = 'AI 캐시';
+            this.#setIdleStatus('AI 캐시');
             return { chats: cached.map((chat) => ({ ...chat })), source: 'cache' };
         }
 
-        this.chatBusy = true;
-        this.chatRequestSequence += 1;
-        const requestId = this.chatRequestSequence;
-        this.status = '채팅 생성 중';
-        const requestGeneration = this.generation;
-
-        try {
-            const requestBody = this.contract.buildChatRequestBody({
-                ...context,
-                viewerIds
-            });
-            const responseText = await this.#requestGemini(requestBody);
-            if (this.destroyed
-                || requestGeneration !== this.generation
-                || requestId !== this.chatRequestSequence) {
-                return { chats: [], source: 'discarded' };
-            }
-
-            const validated = this.contract.parseChatResponse(responseText, {
-                ...context,
-                viewerIds
-            });
-            const chats = validated.chats.map((chat) => ({ ...chat }));
-            this.#setCacheEntry(cacheKey, chats);
-            this.status = 'AI 온라인';
-            return { chats, source: 'model' };
-        } catch (error) {
-            if (this.destroyed
-                || requestGeneration !== this.generation
-                || requestId !== this.chatRequestSequence) {
-                return { chats: [], source: 'discarded' };
-            }
-            if (error?.name !== 'AbortError') {
-                this.status = '로컬 폴백';
-                this.#reportSafeWarning('일반 채팅 생성', error);
-            }
-            return { chats: [], source: 'fallback' };
-        } finally {
-            if (requestGeneration === this.generation && requestId === this.chatRequestSequence) {
-                this.chatBusy = false;
-            }
-        }
+        return this.#enqueueRequest({
+            lane: 'chat',
+            modelId,
+            execute: (job) => this.#executeChatRequest(job, context, viewerIds, cacheKey),
+            discardedResult: () => this.#buildDiscardedChatResult(),
+            overflowResult: () => ({ chats: [], source: 'fallback', overflow: true })
+        });
     }
 
     /**
      * 플레이어 위장 채팅을 기획서의 다섯 의도 중 하나로 분류합니다.
      * @param {object} context - 메시지와 현재 방송 맥락입니다.
-     * @returns {Promise<{intent:string,confidence:number,reason:string,reaction_chats:Array,source:string}>} 분류 결과입니다.
+     * @returns {Promise<{intent:string,confidence:number,reason:string,hero_reply:string,hero_expression:string,callback_text:string,reaction_chats:Array,source:string}>} 분류 결과입니다.
      */
     async classifyPlayerMessage(context) {
+        if (this.destroyed) {
+            return this.#buildDiscardedIntentResult();
+        }
         const localResult = this.contract.classifyLocally(context?.message || '');
         if (localResult.intent === 'blocked') {
-            this.status = '안전 필터 차단';
+            this.#setIdleStatus('안전 필터 차단');
             return { ...localResult, reaction_chats: [], source: 'local-safety' };
         }
-        if (this.destroyed) {
-            return {
-                ...this.#buildTechnicalFailureResult('요청이 취소되어 메시지를 전송하지 않았습니다.'),
-                source: 'discarded',
-                discarded: true
-            };
-        }
-        if (this.rules.ENABLED === false || this.intentBusy) {
-            this.status = '의도 판정 보류';
+        if (this.rules.ENABLED === false) {
+            this.#setIdleStatus('의도 판정 보류');
             return {
                 ...this.#buildTechnicalFailureResult('AI 판정을 시작할 수 없어 메시지를 전송하지 않았습니다.'),
                 source: 'technical-failure'
             };
         }
 
-        this.intentBusy = true;
-        this.intentRequestSequence += 1;
-        const requestId = this.intentRequestSequence;
-        const requestGeneration = this.generation;
         const viewerIds = this.#resolveViewerIds(context);
-        this.status = '의도 판정 중';
-
-        try {
-            const requestBody = this.contract.buildIntentRequestBody({
-                ...context,
-                viewerIds
-            });
-            const responseText = await this.#requestGemini(requestBody);
-            if (this.destroyed
-                || requestGeneration !== this.generation
-                || requestId !== this.intentRequestSequence) {
-                return {
-                    ...this.#buildTechnicalFailureResult('요청이 취소되어 메시지를 전송하지 않았습니다.'),
-                    source: 'discarded',
-                    discarded: true
-                };
-            }
-
-            const validated = this.contract.parseIntentResponse(responseText, viewerIds);
-            this.status = 'AI 온라인';
-            return {
-                ...validated,
-                reaction_chats: validated.reaction_chats.map((chat) => ({ ...chat })),
-                source: 'model'
-            };
-        } catch (error) {
-            if (this.destroyed
-                || requestGeneration !== this.generation
-                || requestId !== this.intentRequestSequence) {
-                return {
-                    ...this.#buildTechnicalFailureResult('요청이 취소되어 메시지를 전송하지 않았습니다.'),
-                    source: 'discarded',
-                    discarded: true
-                };
-            }
-            if (this.#isProviderSafetyBlock(error)) {
-                this.status = '안전 필터 차단';
-                return {
-                    intent: 'blocked',
-                    confidence: 100,
-                    reason: '안전 기준에 따라 전송할 수 없는 표현입니다.',
-                    reaction_chats: [],
-                    source: 'provider-safety'
-                };
-            }
-            if (error?.name !== 'AbortError') {
-                this.status = '의도 판정 실패';
-                this.#reportSafeWarning('자유 채팅 분류', error);
-            }
-            return {
-                ...this.#buildTechnicalFailureResult('AI 판정을 완료하지 못해 메시지를 전송하지 않았습니다.'),
-                source: 'technical-failure'
-            };
-        } finally {
-            if (requestGeneration === this.generation && requestId === this.intentRequestSequence) {
-                this.intentBusy = false;
-            }
-        }
+        const modelId = this.#resolveModelId('intent');
+        return this.#enqueueRequest({
+            lane: 'intent',
+            modelId,
+            execute: (job) => this.#executeIntentRequest(job, context, viewerIds),
+            discardedResult: () => this.#buildDiscardedIntentResult(),
+            overflowResult: () => ({
+                ...this.#buildTechnicalFailureResult(
+                    'AI 요청이 많아 판정을 시작하지 못했습니다. 잠시 후 다시 시도해 주세요.'
+                ),
+                source: 'technical-failure',
+                overflow: true
+            })
+        });
     }
 
     /**
@@ -211,14 +130,21 @@ export class AeroLiveAiService {
      */
     abortAll() {
         this.generation += 1;
-        this.chatRequestSequence += 1;
-        this.intentRequestSequence += 1;
+        if (this.activeJob) {
+            this.#settleJob(this.activeJob, this.activeJob.discardedResult());
+        }
+        const queuedJobs = this.requestQueue.splice(0);
+        for (const job of queuedJobs) {
+            this.#settleJob(job, job.discardedResult());
+        }
         for (const controller of this.controllers) {
             controller.abort();
         }
         this.controllers.clear();
-        this.chatBusy = false;
-        this.intentBusy = false;
+        if (!this.destroyed) {
+            this.idleStatus = 'AI 요청 취소됨';
+        }
+        this.#refreshStatus();
     }
 
     /**
@@ -228,16 +154,308 @@ export class AeroLiveAiService {
         this.destroyed = true;
         this.abortAll();
         this.chatCache.clear();
+        this.idleStatus = '종료됨';
         this.status = '종료됨';
+    }
+
+    /**
+     * 공급자 요청을 chat/intent 구분 없이 하나의 FIFO 대기열에 넣습니다.
+     * @param {object} definition - lane별 실행 함수와 안전 결과 factory입니다.
+     * @returns {Promise<object>} 해당 요청에 연결된 결과 Promise입니다.
+     * @private
+     */
+    #enqueueRequest(definition) {
+        if (this.destroyed) {
+            return Promise.resolve(definition.discardedResult());
+        }
+        if (this.requestQueue.length >= this.maxQueuedRequests) {
+            this.#setIdleStatus('AI 대기열 포화');
+            return Promise.resolve(definition.overflowResult());
+        }
+
+        const job = {
+            id: ++this.requestSequence,
+            generation: this.generation,
+            lane: definition.lane,
+            modelId: definition.modelId,
+            execute: definition.execute,
+            discardedResult: definition.discardedResult,
+            overflowResult: definition.overflowResult,
+            resolve: null,
+            settled: false
+        };
+        const resultPromise = new Promise((resolve) => {
+            job.resolve = resolve;
+        });
+        this.requestQueue.push(job);
+        this.#refreshStatus();
+        this.#pumpQueue();
+        return resultPromise;
+    }
+
+    /**
+     * 활성 작업이 없을 때 가장 오래 기다린 유효 요청 하나만 실행합니다.
+     * @private
+     */
+    #pumpQueue() {
+        if (this.destroyed || this.activeJob) {
+            return;
+        }
+
+        let job = this.requestQueue.shift() || null;
+        while (job && (job.settled || job.generation !== this.generation)) {
+            this.#settleJob(job, job.discardedResult());
+            job = this.requestQueue.shift() || null;
+        }
+        if (!job) {
+            this.#refreshStatus();
+            return;
+        }
+
+        this.activeJob = job;
+        this.#refreshStatus();
+        void this.#runJob(job);
+    }
+
+    /**
+     * 단일 작업을 실행하고 완료된 뒤에만 다음 작업으로 넘어갑니다.
+     * @param {object} job - 현재 활성 요청입니다.
+     * @private
+     */
+    async #runJob(job) {
+        try {
+            const result = this.#isJobCurrent(job)
+                ? await job.execute(job)
+                : job.discardedResult();
+            this.#settleJob(
+                job,
+                this.#isJobCurrent(job) ? result : job.discardedResult()
+            );
+        } catch (error) {
+            if (!this.#isJobCurrent(job)) {
+                this.#settleJob(job, job.discardedResult());
+            } else if (job.lane === 'chat') {
+                this.#setIdleStatus('로컬 폴백');
+                this.#reportSafeWarning('일반 채팅 생성', error);
+                this.#settleJob(job, { chats: [], source: 'fallback' });
+            } else {
+                this.#setIdleStatus('의도 판정 실패');
+                this.#reportSafeWarning('자유 채팅 분류', error);
+                this.#settleJob(job, {
+                    ...this.#buildTechnicalFailureResult(
+                        'AI 판정을 완료하지 못해 메시지를 전송하지 않았습니다.'
+                    ),
+                    source: 'technical-failure'
+                });
+            }
+        } finally {
+            if (this.activeJob === job) {
+                this.activeJob = null;
+            }
+            this.#refreshStatus();
+            this.#pumpQueue();
+        }
+    }
+
+    /**
+     * 일반 채팅 공급자 요청 하나를 실행합니다.
+     * @param {object} job - 활성 FIFO 작업입니다.
+     * @param {object} context - 비트 맥락입니다.
+     * @param {string[]} viewerIds - 게임이 허용한 시청자 ID입니다.
+     * @param {string} cacheKey - 채팅 캐시 키입니다.
+     * @returns {Promise<object>} 채팅 생성 결과입니다.
+     * @private
+     */
+    async #executeChatRequest(job, context, viewerIds, cacheKey) {
+        const cached = this.chatCache.get(cacheKey);
+        if (cached) {
+            this.#touchCacheEntry(cacheKey, cached);
+            this.#setIdleStatus('AI 캐시');
+            return { chats: cached.map((chat) => ({ ...chat })), source: 'cache' };
+        }
+
+        try {
+            const requestBody = this.contract.buildChatRequestBody({
+                ...context,
+                viewerIds
+            });
+            const responseText = await this.#requestGemini(requestBody, job.modelId);
+            if (!this.#isJobCurrent(job)) {
+                return job.discardedResult();
+            }
+
+            const validated = this.contract.parseChatResponse(responseText, {
+                ...context,
+                viewerIds
+            });
+            if (!this.#isJobCurrent(job)) {
+                return job.discardedResult();
+            }
+            const chats = validated.chats.map((chat) => ({ ...chat }));
+            this.#setCacheEntry(cacheKey, chats);
+            this.#setIdleStatus('AI 온라인');
+            return { chats, source: 'model' };
+        } catch (error) {
+            if (!this.#isJobCurrent(job)) {
+                return job.discardedResult();
+            }
+            this.#setIdleStatus('로컬 폴백');
+            if (error?.name !== 'AbortError') {
+                this.#reportSafeWarning('일반 채팅 생성', error);
+            }
+            return { chats: [], source: 'fallback' };
+        }
+    }
+
+    /**
+     * 플레이어 메시지 의도 공급자 요청 하나를 실행합니다.
+     * @param {object} job - 활성 FIFO 작업입니다.
+     * @param {object} context - 플레이어 메시지 맥락입니다.
+     * @param {string[]} viewerIds - 게임이 허용한 시청자 ID입니다.
+     * @returns {Promise<object>} 의도 판정 결과입니다.
+     * @private
+     */
+    async #executeIntentRequest(job, context, viewerIds) {
+        try {
+            const requestBody = this.contract.buildIntentRequestBody({
+                ...context,
+                viewerIds
+            });
+            const responseText = await this.#requestGemini(requestBody, job.modelId);
+            if (!this.#isJobCurrent(job)) {
+                return job.discardedResult();
+            }
+
+            const validated = this.contract.parseIntentResponse(responseText, viewerIds);
+            this.#setIdleStatus('AI 온라인');
+            return {
+                ...validated,
+                reaction_chats: validated.reaction_chats.map((chat) => ({ ...chat })),
+                source: 'model'
+            };
+        } catch (error) {
+            if (!this.#isJobCurrent(job)) {
+                return job.discardedResult();
+            }
+            if (this.#isProviderSafetyBlock(error)) {
+                this.#setIdleStatus('안전 필터 차단');
+                return {
+                    intent: 'blocked',
+                    confidence: 100,
+                    reason: '안전 기준에 따라 전송할 수 없는 표현입니다.',
+                    hero_reply: '',
+                    hero_expression: 'idle',
+                    callback_text: '',
+                    reaction_chats: [],
+                    source: 'provider-safety'
+                };
+            }
+            this.#setIdleStatus('의도 판정 실패');
+            if (error?.name !== 'AbortError') {
+                this.#reportSafeWarning('자유 채팅 분류', error);
+            }
+            return {
+                ...this.#buildTechnicalFailureResult(
+                    'AI 판정을 완료하지 못해 메시지를 전송하지 않았습니다.'
+                ),
+                source: 'technical-failure'
+            };
+        }
+    }
+
+    /**
+     * 작업이 현재 세대에서 계속 유효한지 확인합니다.
+     * @param {object} job - 검사할 요청입니다.
+     * @returns {boolean} 결과를 적용해도 되는지 여부입니다.
+     * @private
+     */
+    #isJobCurrent(job) {
+        return !this.destroyed && job.generation === this.generation;
+    }
+
+    /**
+     * 각 호출자가 보유한 Promise를 정확히 한 번만 해소합니다.
+     * @param {object} job - 완료할 요청입니다.
+     * @param {object} result - 안전하게 정규화된 결과입니다.
+     * @private
+     */
+    #settleJob(job, result) {
+        if (!job || job.settled) {
+            return;
+        }
+        job.settled = true;
+        job.resolve(result);
+    }
+
+    /**
+     * 실행 lane과 대기 건수를 사용해 UI 상태 문자열을 갱신합니다.
+     * @private
+     */
+    #refreshStatus() {
+        if (this.destroyed) {
+            this.status = '종료됨';
+            return;
+        }
+        const queuedCount = this.requestQueue.reduce(
+            (count, job) => count + (job.settled ? 0 : 1),
+            0
+        );
+        if (this.activeJob) {
+            const activeLabel = this.activeJob.settled
+                ? 'AI 요청 취소 정리 중'
+                : (this.activeJob.lane === 'chat' ? '채팅 생성 중' : '의도 판정 중');
+            this.status = queuedCount > 0
+                ? `${activeLabel} · ${queuedCount}건 대기`
+                : activeLabel;
+            return;
+        }
+        if (queuedCount > 0) {
+            this.status = `AI 요청 ${queuedCount}건 대기`;
+            return;
+        }
+        this.status = this.idleStatus;
+    }
+
+    /**
+     * 활성 요청이 없을 때 표시할 상태를 보존합니다.
+     * @param {string} status - 한국어 상태 문자열입니다.
+     * @private
+     */
+    #setIdleStatus(status) {
+        this.idleStatus = status;
+        this.#refreshStatus();
+    }
+
+    /**
+     * 취소된 채팅 생성 요청의 공통 결과를 만듭니다.
+     * @returns {{chats:Array,source:string,discarded:boolean}} 폐기 결과입니다.
+     * @private
+     */
+    #buildDiscardedChatResult() {
+        return { chats: [], source: 'discarded', discarded: true };
+    }
+
+    /**
+     * 취소된 의도 판정 요청의 공통 결과를 만듭니다.
+     * @returns {object} 사용 횟수를 소모하지 않는 폐기 결과입니다.
+     * @private
+     */
+    #buildDiscardedIntentResult() {
+        return {
+            ...this.#buildTechnicalFailureResult('요청이 취소되어 메시지를 전송하지 않았습니다.'),
+            source: 'discarded',
+            discarded: true
+        };
     }
 
     /**
      * Gemini generateContent를 호출하고 검증 전 응답 텍스트만 반환합니다.
      * @param {object} requestBody - 구조화 요청 본문입니다.
+     * @param {string} modelId - 해당 FIFO 작업에 고정된 Gemini 모델 ID입니다.
      * @returns {Promise<string>} 후보 텍스트입니다.
      * @private
      */
-    async #requestGemini(requestBody) {
+    async #requestGemini(requestBody, modelId) {
         const apiKey = this.#readGeminiApiKey();
         const fetchImpl = this.fetchImpl
             || (typeof window !== 'undefined' ? window.fetch?.bind(window) : globalThis.fetch);
@@ -245,11 +463,24 @@ export class AeroLiveAiService {
             throw new Error('FETCH_UNAVAILABLE');
         }
 
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.rules.API_MODEL)}:generateContent`;
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent`;
         const controller = new AbortController();
         const timeoutFunction = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout;
         const clearTimeoutFunction = typeof window !== 'undefined' ? window.clearTimeout.bind(window) : clearTimeout;
         let timedOut = false;
+        let abortListener = null;
+        const abortGate = new Promise((_resolve, reject) => {
+            abortListener = () => {
+                if (timedOut) {
+                    reject(new Error('REQUEST_TIMEOUT'));
+                    return;
+                }
+                const abortError = new Error('REQUEST_ABORTED');
+                abortError.name = 'AbortError';
+                reject(abortError);
+            };
+            controller.signal.addEventListener('abort', abortListener, { once: true });
+        });
         const timeoutId = timeoutFunction(
             () => {
                 timedOut = true;
@@ -259,24 +490,16 @@ export class AeroLiveAiService {
         );
         this.controllers.add(controller);
 
-        try {
-            let response;
-            try {
-                response = await fetchImpl(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'x-goog-api-key': apiKey
-                    },
-                    body: JSON.stringify(requestBody),
-                    signal: controller.signal
-                });
-            } catch (error) {
-                if (timedOut && error?.name === 'AbortError') {
-                    throw new Error('REQUEST_TIMEOUT');
-                }
-                throw error;
-            }
+        const providerPromise = (async () => {
+            const response = await fetchImpl(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': apiKey
+                },
+                body: JSON.stringify(requestBody),
+                signal: controller.signal
+            });
             const responseText = await response.text();
             if (responseText.length > MAX_RESPONSE_BYTES) {
                 throw new Error('RESPONSE_TOO_LARGE');
@@ -312,6 +535,13 @@ export class AeroLiveAiService {
                 throw new Error('EMPTY_MODEL_RESPONSE');
             }
             return text;
+        })();
+
+        // Promise.race가 이미 끝난 뒤 공급자 구현이 늦게 reject해도 전역 unhandled가 되지 않습니다.
+        void providerPromise.catch(() => {});
+
+        try {
+            return await Promise.race([providerPromise, abortGate]);
         } catch (error) {
             if (timedOut && error?.name === 'AbortError') {
                 throw new Error('REQUEST_TIMEOUT');
@@ -319,6 +549,9 @@ export class AeroLiveAiService {
             throw error;
         } finally {
             clearTimeoutFunction(timeoutId);
+            if (abortListener) {
+                controller.signal.removeEventListener('abort', abortListener);
+            }
             this.controllers.delete(controller);
         }
     }
@@ -409,18 +642,36 @@ export class AeroLiveAiService {
     }
 
     /**
+     * 요청 lane에 지정된 실제 Gemini 모델 ID를 반환합니다.
+     * @param {'chat'|'intent'} lane - 공급자 요청 종류입니다.
+     * @returns {string} endpoint와 캐시 키에 함께 사용할 모델 ID입니다.
+     * @private
+     */
+    #resolveModelId(lane) {
+        const configured = lane === 'chat'
+            ? this.rules.CHAT_API_MODEL
+            : this.rules.INTENT_API_MODEL;
+        const modelId = String(configured || this.rules.API_MODEL || '').trim();
+        if (!modelId) {
+            throw new Error('API_MODEL_NOT_CONFIGURED');
+        }
+        return modelId;
+    }
+
+    /**
      * 캐시 키를 현재 모델과 프롬프트 버전까지 포함해 만듭니다.
      * @param {string} lane - 요청 종류입니다.
      * @param {object} payload - 키 데이터입니다.
+     * @param {string} modelId - 해당 요청이 실제 사용하는 모델 ID입니다.
      * @returns {string} 캐시 키입니다.
      * @private
      */
-    #buildCacheKey(lane, payload) {
+    #buildCacheKey(lane, payload, modelId) {
         return JSON.stringify({
             lane,
             schema: this.rules.SCHEMA_VERSION,
             prompt: this.rules.PROMPT_REVISION,
-            model: this.rules.API_MODEL,
+            model: modelId,
             payload
         });
     }
@@ -488,7 +739,7 @@ export class AeroLiveAiService {
     /**
      * 기술 실패 때 사용 횟수를 소모하지 않도록 전송 보류 결과를 만듭니다.
      * @param {string} reason - 사용자에게 보여줄 안전한 사유입니다.
-     * @returns {{intent:string,confidence:number,reason:string,reaction_chats:Array}} 전송 보류 결과입니다.
+     * @returns {{intent:string,confidence:number,reason:string,hero_reply:string,hero_expression:string,callback_text:string,reaction_chats:Array}} 전송 보류 결과입니다.
      * @private
      */
     #buildTechnicalFailureResult(reason) {
@@ -496,6 +747,9 @@ export class AeroLiveAiService {
             intent: 'blocked',
             confidence: 0,
             reason,
+            hero_reply: '',
+            hero_expression: 'idle',
+            callback_text: '',
             reaction_chats: []
         };
     }

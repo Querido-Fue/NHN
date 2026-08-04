@@ -53,7 +53,9 @@ export class SoundSystem {
         this.setDiagnosticSampleVolume(SOUND_CONSTANTS.DIAGNOSTIC_SAMPLE.DEFAULT_VOLUME);
 
         if (SOUND_CONSTANTS.BGM.AUTO_PLAY !== false) {
-            await this.playBgm();
+            // 자동재생 Promise는 오디오 장치/브라우저 정책에 따라 사용자 입력까지
+            // 보류될 수 있으므로 게임의 전체 시스템 초기화를 막지 않습니다.
+            void this.playBgm();
         }
     }
 
@@ -83,12 +85,25 @@ export class SoundSystem {
         }
 
         try {
+            // play()가 reject하지 않고 사용자 입력까지 pending으로 남는 구현도 있으므로
+            // await 전에 unlock 재시도 경로를 준비합니다.
+            this.#pendingAutoplay = true;
+            this.#attachUnlockListeners();
             await this.bgmAudio.play();
+            if (this.#runtimeSuspended) {
+                this.bgmAudio.pause();
+                this.#resumePlaybackAfterRuntimeSuspend = true;
+                return;
+            }
             this.#pendingAutoplay = false;
             this.#detachUnlockListeners();
         } catch (e) {
             this.#pendingAutoplay = true;
-            this.#attachUnlockListeners();
+            try {
+                this.#attachUnlockListeners();
+            } catch {
+                // 자동재생 보조 리스너 실패가 게임 런타임까지 거절시키지 않게 합니다.
+            }
         }
     }
 

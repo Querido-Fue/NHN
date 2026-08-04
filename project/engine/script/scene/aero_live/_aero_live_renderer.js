@@ -4,6 +4,7 @@ import { OverlaySession } from 'overlay/_overlay_session.js';
 import { getSetting } from 'save/save_system.js';
 import { createFontString, truncateTextToWidth, wrapTextByCharacters } from 'util/font_util.js';
 import { buildVisibleChatRows } from './_aero_live_chat_layout.mjs';
+import { resolveAeroLivePlayerNameTemplate } from './_aero_live_player_identity.mjs';
 
 const AERO_CONSTANTS = getData('AERO_LIVE_SCENE_CONSTANTS');
 const UI = AERO_CONSTANTS.UI;
@@ -209,7 +210,8 @@ export class AeroLiveRenderer {
         this.#ensureGlassSession();
         this.#syncGlassBackdropRevision();
         this.#backdrop();
-        if (context.mode === 'topicSelect') this.#topics();
+        if (context.mode === 'nickname') this.#nickname();
+        else if (context.mode === 'topicSelect') this.#topics();
         else if (context.mode === 'results') this.#results();
         else this.#live();
         this.#toast();
@@ -451,6 +453,57 @@ export class AeroLiveRenderer {
         });
     }
 
+    /** 프로토타입 시작 전 로컬 닉네임 입력 안내를 그립니다. @private */
+    #nickname() {
+        const c = this.context;
+        const rect = c.layout.nicknamePanel;
+        const center = c.UIOffsetX + c.UIWW / 2;
+        this.#label('AERO LIVE', center, c.WH * .1, this.#size(UI.TITLE_FONT_WH), COLORS.INK, {
+            align: 'center',
+            weight: 950,
+            shadowBlur: 16,
+            shadowColor: 'rgba(66,224,208,0.48)'
+        });
+        this.#panel(rect, {
+            fill: COLORS.GLASS_FILL_STRONG,
+            stroke: c.nicknameInvalid ? COLORS.NEGATIVE : COLORS.AQUA,
+            edgeColor: c.nicknameInvalid ? COLORS.NEGATIVE : COLORS.AQUA,
+            tintColor: COLORS.AQUA,
+            tintStrength: .1,
+            lineWidth: 2.2,
+            shadowColor: c.nicknameInvalid ? COLORS.NEGATIVE : COLORS.AQUA,
+            shadowRadius: 22
+        });
+        this.#label(
+            '방송에서 사용할 닉네임을 정해 주세요',
+            rect.x + rect.w / 2,
+            rect.y + rect.h * .17,
+            this.#size(UI.SUBTITLE_FONT_WH) * 1.08,
+            COLORS.INK,
+            { align: 'center', weight: 950, maxWidth: rect.w * .86 }
+        );
+        this.#wrapped(
+            '닉네임은 AI에 전송되지 않고 이 화면에서만 사용됩니다.',
+            rect.x + rect.w * .1,
+            rect.y + rect.h * .35,
+            rect.w * .8,
+            this.#size(UI.BODY_FONT_WH),
+            COLORS.DEEP_BLUE,
+            2,
+            'center'
+        );
+        this.#label(
+            c.nicknameInvalid
+                ? '입력 형식을 확인해 주세요 · 한글·영문·숫자·밑줄 2~16자'
+                : '한글·영문·숫자·밑줄 2~16자',
+            rect.x + rect.w / 2,
+            rect.y + rect.h * .49,
+            this.#size(UI.SMALL_FONT_WH),
+            c.nicknameInvalid ? COLORS.NEGATIVE : COLORS.INK_MUTED,
+            { align: 'center', weight: 850, maxWidth: rect.w * .84 }
+        );
+    }
+
     /** 다섯 방송 주제 카드와 조작 안내를 그립니다. @private */
     #topics() {
         const c = this.context;
@@ -458,6 +511,14 @@ export class AeroLiveRenderer {
         this.#label('AERO LIVE', center, c.WH * .095, this.#size(UI.TITLE_FONT_WH), COLORS.INK, {
             align: 'center', weight: 950, shadowBlur: 16, shadowColor: 'rgba(66,224,208,0.48)'
         });
+        this.#label(
+            `${c.playerName || '플레이어'}님, 오늘 방송 주제를 선택해 주세요`,
+            center,
+            c.WH * .17,
+            this.#size(UI.BODY_FONT_WH),
+            COLORS.DEEP_BLUE,
+            { align: 'center', weight: 850, maxWidth: c.UIWW * .72 }
+        );
 
         c.topicButtons.forEach((button, index) => {
             const topic = c.topicSummaries[index] || {};
@@ -580,7 +641,10 @@ export class AeroLiveRenderer {
         const dialogue = c.layout.heroDialogue;
         const beat = c.snapshot?.currentBeat || {};
         const activeDonation = c.snapshot?.activeDonation;
-        const heroImage = this.#heroImageForExpression(beat.expression);
+        const activeExpression = c.heroResponseText
+            ? (c.heroResponseExpression || beat.expression)
+            : beat.expression;
+        const heroImage = this.#heroImageForExpression(activeExpression);
         this.#panel(c.layout.center, { fill: COLORS.GLASS_FILL, alpha: .89, tintColor: COLORS.AERO_PINK || COLORS.SKY_HAZE, tintStrength: .07 });
         this.#drawContent({
             shape: 'roundRect',
@@ -623,7 +687,8 @@ export class AeroLiveRenderer {
         });
         const tag = { x: stage.x + stage.w * .03, y: stage.y + stage.h * .035, w: stage.w * .31, h: Math.max(28, stage.h * .075) };
         this.#drawContent({ shape: 'roundRect', ...tag, radius: 999, fill: COLORS.DARK_GLASS, alpha: .84 });
-        const expressionLabel = EXPRESSION_LABELS[beat.expression] || text(beat.expression || '기본', 14);
+        const expressionLabel = EXPRESSION_LABELS[activeExpression]
+            || text(activeExpression || '기본', 14);
         const moodLabel = MOOD_LABELS[beat.mood] || text(beat.mood || '평온', 14);
         this.#label(`${expressionLabel} · ${moodLabel}`, tag.x + tag.w / 2, tag.y + tag.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 850, maxWidth: tag.w * .9 });
         if (activeDonation) {
@@ -638,7 +703,8 @@ export class AeroLiveRenderer {
         });
         this.#label(`BEAT ${number(beat.index) + 1} / ${Math.max(1, number(beat.total, 1))}`, dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .22, this.#size(UI.SMALL_FONT_WH), COLORS.AQUA, { baseline: 'middle', weight: 900 });
         if (c.heroResponseText) {
-            this.#label('후원 대응', dialogue.x + dialogue.w * .23, dialogue.y + dialogue.h * .22, this.#size(UI.SMALL_FONT_WH), COLORS.WARNING, { baseline: 'middle', weight: 900 });
+            const responseLabel = c.heroResponseLabel || '실시간 답변';
+            this.#label(responseLabel, dialogue.x + dialogue.w * .23, dialogue.y + dialogue.h * .22, this.#size(UI.SMALL_FONT_WH), responseLabel === '채팅 답변' ? COLORS.AQUA : COLORS.WARNING, { baseline: 'middle', weight: 900 });
         }
         this.#wrapped(c.heroResponseText || beat.heroText || '방송 시작을 준비하고 있어요.', dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .4, dialogue.w * .89, this.#size(UI.DIALOGUE_FONT_WH), COLORS.GLASS_WHITE, 3);
     }
@@ -658,7 +724,9 @@ export class AeroLiveRenderer {
             this.#button(button, label || '처리', COLORS.DARK_GLASS, CORE_COLORS[id] || COLORS.AQUA, COLORS.GLASS_WHITE, button.aeroDisabled);
         });
         const composer = c.layout.composer;
-        const state = c.inputClassificationPending ? 'AI 판정 중 · 활성 이벤트 타이머 일시정지' : '가면 계정으로 방송 여론에 개입할 수 있습니다.';
+        const state = c.inputClassificationPending
+            ? 'AI 판정 중 · 활성 이벤트 타이머 일시정지'
+            : `${c.playerName || '플레이어'}님의 닉네임은 AI에 전송되지 않습니다.`;
         this.#label(state, composer.x, composer.y - c.layout.gap * .42, this.#size(UI.SMALL_FONT_WH), c.inputClassificationPending ? COLORS.NEGATIVE : COLORS.INK_MUTED, { baseline: 'bottom', weight: 800, maxWidth: composer.w });
     }
 
@@ -694,7 +762,7 @@ export class AeroLiveRenderer {
                     : chat.sentiment === 'negative'
                         ? COLORS.NEGATIVE
                         : COLORS.NEUTRAL;
-            const player = String(chat.source || '').includes('player');
+            const player = chat.source === 'player' && chat.masked === true;
             const rowFill = coreSelected
                 ? 'rgba(255,214,90,0.3)'
                 : coreActive
@@ -715,7 +783,9 @@ export class AeroLiveRenderer {
             const authorW = core ? Math.min(row.w * .39, 126) : Math.min(row.w * .31, 96);
             const author = core
                 ? `CORE · ${chat.author || chat.viewer_id || 'viewer'}`
-                : chat.author || chat.viewer_id || 'viewer';
+                : (player
+                    ? (c.playerName || '플레이어')
+                    : chat.author || chat.viewer_id || 'viewer');
             const textRight = row.x + row.w - 8;
             this.#label(author, row.x + 15, row.y + row.h / 2, this.#size(UI.SMALL_FONT_WH), player ? COLORS.DEEP_BLUE : accent, { baseline: 'middle', weight: 900, maxWidth: authorW - 18 });
             this.#label(chat.text, row.x + authorW, row.y + row.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.INK, { baseline: 'middle', weight: player || core ? 800 : 650, maxWidth: Math.max(20, textRight - (row.x + authorW)), clipRect: row });
@@ -859,13 +929,65 @@ export class AeroLiveRenderer {
         this.#label(`자유 채팅 판정 · ${integer(playerMessages.used ?? s.playerMessagesUsed)}/3회`, intentRect.x + intentRect.w * .035, intentRect.y + intentRect.h * .25, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { baseline: 'middle', weight: 850 });
         this.#label(intents.map((intent, index) => `${index + 1} ${intent}`).join('  ·  '), intentRect.x + intentRect.w * .035, intentRect.y + intentRect.h * .68, this.#size(UI.BODY_FONT_WH), COLORS.DEEP_BLUE, { baseline: 'middle', weight: 900, maxWidth: intentRect.w * .93 });
 
-        const moments = Array.isArray(result.majorMoments) ? result.majorMoments : [];
-        const momentLines = moments.slice(-3).map((item) => text(item.text || item.label || item, 76)).filter(Boolean);
-        this.#label('주요 순간', rightX, right.y + right.h * .595, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { baseline: 'middle', weight: 900 });
-        const momentFontSize = this.#size(UI.SMALL_FONT_WH);
-        momentLines.forEach((line, index) => {
-            this.#label(`• ${line}`, rightX, right.y + right.h * .625 + index * momentFontSize * 1.28, momentFontSize, COLORS.INK, { weight: 750, maxWidth: rightW });
+        const memories = Array.isArray(c.echoMemories) ? c.echoMemories : [];
+        const latestMemory = memories[memories.length - 1];
+        const memoryRect = {
+            x: rightX,
+            y: right.y + right.h * .585,
+            w: rightW,
+            h: right.h * .17
+        };
+        this.#drawContent({
+            shape: 'roundRect',
+            ...memoryRect,
+            radius: this.#radius() * .5,
+            fill: latestMemory ? 'rgba(154,133,255,0.14)' : 'rgba(95,203,255,0.1)'
         });
+        this.#label(
+            latestMemory ? `방송이 기억한 순간 · ${integer(memories.length)}개` : '주요 순간',
+            memoryRect.x + memoryRect.w * .035,
+            memoryRect.y + memoryRect.h * .2,
+            this.#size(UI.SMALL_FONT_WH),
+            latestMemory ? (COLORS.AERO_VIOLET || COLORS.AQUA) : COLORS.INK_MUTED,
+            { baseline: 'middle', weight: 900, maxWidth: memoryRect.w * .93 }
+        );
+        if (latestMemory) {
+            this.#label(
+                `${c.playerName || '플레이어'} · ${latestMemory.playerMessage}`,
+                memoryRect.x + memoryRect.w * .035,
+                memoryRect.y + memoryRect.h * .43,
+                this.#size(UI.SMALL_FONT_WH),
+                COLORS.DEEP_BLUE,
+                { baseline: 'middle', weight: 850, maxWidth: memoryRect.w * .93 }
+            );
+            this.#label(
+                `AERO · ${latestMemory.heroReply}`,
+                memoryRect.x + memoryRect.w * .035,
+                memoryRect.y + memoryRect.h * .66,
+                this.#size(UI.SMALL_FONT_WH),
+                COLORS.INK,
+                { baseline: 'middle', weight: 800, maxWidth: memoryRect.w * .93 }
+            );
+            if (latestMemory.callbackText) {
+                this.#label(
+                    `채팅 · ${latestMemory.callbackText}`,
+                    memoryRect.x + memoryRect.w * .035,
+                    memoryRect.y + memoryRect.h * .87,
+                    this.#size(UI.SMALL_FONT_WH),
+                    COLORS.INK_MUTED,
+                    { baseline: 'middle', weight: 750, maxWidth: memoryRect.w * .93 }
+                );
+            }
+        } else {
+            const moments = Array.isArray(result.majorMoments) ? result.majorMoments : [];
+            const momentLines = moments.slice(-2)
+                .map((item) => text(item.text || item.label || item, 76))
+                .filter(Boolean);
+            const momentFontSize = this.#size(UI.SMALL_FONT_WH);
+            momentLines.forEach((line, index) => {
+                this.#label(`• ${line}`, memoryRect.x + memoryRect.w * .035, memoryRect.y + memoryRect.h * (.48 + index * .28), momentFontSize, COLORS.INK, { baseline: 'middle', weight: 750, maxWidth: memoryRect.w * .93 });
+            });
+        }
         const heroRect = { x: rightX, y: right.y + right.h * .785, w: rightW, h: right.h * .15 };
         this.#drawContent({ shape: 'roundRect', ...heroRect, radius: this.#radius() * .55, fill: COLORS.DARK_GLASS });
         this.#label('히로인의 한마디', heroRect.x + heroRect.w * .035, heroRect.y + heroRect.h * .25, this.#size(UI.SMALL_FONT_WH), COLORS.AQUA, { baseline: 'middle', weight: 900 });
@@ -912,11 +1034,12 @@ export class AeroLiveRenderer {
         const c = this.context;
         if (!c.toastText || c.toastSecondsRemaining <= 0 || c.earlyEndModalOpen) return;
         const font = createFontString({ weight: 850, sizePx: this.#size(UI.BODY_FONT_WH), family: FONT_FAMILY });
-        const width = Math.min(c.UIWW * .66, Math.max(260, measureText(c.toastText, font) + 54));
+        const toastText = this.#displayText(c.toastText, 500);
+        const width = Math.min(c.UIWW * .66, Math.max(260, measureText(toastText, font) + 54));
         const rect = { x: c.UIOffsetX + (c.UIWW - width) / 2, y: c.mode === 'live' ? c.WH * .91 : c.WH * .89, w: width, h: Math.max(42, c.WH * .062) };
         const alpha = clamp(c.toastSecondsRemaining * 2, 0, 1);
         this.#drawContent({ shape: 'roundRect', ...rect, radius: 999, fill: COLORS.DARK_GLASS, stroke: COLORS.AQUA, lineWidth: 1.5, alpha });
-        this.#label(c.toastText, rect.x + rect.w / 2, rect.y + rect.h / 2, this.#size(UI.BODY_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 850, maxWidth: rect.w - 36, alpha });
+        this.#label(toastText, rect.x + rect.w / 2, rect.y + rect.h / 2, this.#size(UI.BODY_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 850, maxWidth: rect.w - 36, alpha });
     }
 
     /** 상태 게이지를 그립니다. @private */
@@ -1087,10 +1210,21 @@ export class AeroLiveRenderer {
         });
     }
 
+    /** 모델 템플릿을 로컬 닉네임으로 치환하고 이전 UI 용어를 사용자 표현으로 정리합니다. @private */
+    #displayText(value, maxChars = 600) {
+        const playerName = text(this.context?.playerName || '플레이어', 24) || '플레이어';
+        return text(
+            resolveAeroLivePlayerNameTemplate(value, playerName),
+            maxChars
+        )
+            .replace(/가면 계정/gu, playerName)
+            .replace(/위장 채팅/gu, '플레이어 채팅');
+    }
+
     /** 한 줄 Canvas 텍스트를 폭에 맞춰 그립니다. @private */
     #label(value, x, y, size, color, options = {}) {
         const font = createFontString({ weight: options.weight || 600, sizePx: size, family: FONT_FAMILY });
-        const safe = text(value, 500);
+        const safe = this.#displayText(value, 500);
         const shown = Number.isFinite(options.maxWidth)
             ? truncateTextToWidth(safe, { maxWidth: options.maxWidth, measureWidth: (candidate) => measureText(candidate, font), ellipsis: '…' })
             : safe;
@@ -1105,7 +1239,7 @@ export class AeroLiveRenderer {
     /** 여러 줄 Canvas 텍스트를 문자 단위로 감싸 그립니다. @private */
     #wrapped(value, x, y, width, size, color, maxLines = 3, align = 'left') {
         const font = createFontString({ weight: 750, sizePx: size, family: FONT_FAMILY });
-        const lines = wrapTextByCharacters(text(value, 600), { maxWidth: width, maxLines, measureWidth: (candidate) => measureText(candidate, font) });
+        const lines = wrapTextByCharacters(this.#displayText(value, 600), { maxWidth: width, maxLines, measureWidth: (candidate) => measureText(candidate, font) });
         lines.forEach((line, index) => this.#label(line, align === 'center' ? x + width / 2 : x, y + index * size * 1.28, size, color, { align, weight: 750, maxWidth: width }));
     }
 

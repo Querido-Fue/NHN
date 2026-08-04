@@ -13,17 +13,58 @@ import { AeroLiveRuntime } from './_aero_live_runtime.mjs';
 import { AeroLiveAiService } from './_aero_live_ai_service.js';
 import { buildVisibleChatRows } from './_aero_live_chat_layout.mjs';
 import { AeroLiveDomComposer } from './_aero_live_dom_composer.js';
+import { AeroLiveNicknameComposer } from './_aero_live_nickname_composer.js';
+import {
+    AERO_LIVE_PLAYER_NAME_TOKEN,
+    replaceAeroLivePlayerNameForModel,
+    validateAeroLivePlayerName
+} from './_aero_live_player_identity.mjs';
 import { AeroLiveRenderer } from './_aero_live_renderer.js';
 
 const AERO_CONSTANTS = getData('AERO_LIVE_SCENE_CONSTANTS');
 const UI = AERO_CONSTANTS.UI;
 const COLORS = AERO_CONSTANTS.COLORS;
 const TRANSPARENT = 'rgba(255,255,255,0)';
+const MODE_NICKNAME = 'nickname';
 const MODE_TOPIC_SELECT = 'topicSelect';
 const MODE_LIVE = 'live';
 const MODE_RESULTS = 'results';
-const AMBIENT_CHAT_START_DELAY_SECONDS = 2;
-const AMBIENT_CHAT_INTERVAL_SECONDS = 2;
+const HERO_RESPONSE_SECONDS = 5.8;
+const ECHO_MEMORY_LIMIT = 3;
+const HERO_EXPRESSIONS = new Set([
+    'idle',
+    'happy',
+    'angry',
+    'sad',
+    'shocked',
+    'embarrassed'
+]);
+const AMBIENT_CHAT_START_DELAY_SECONDS = 0.6;
+const AMBIENT_CHAT_INTERVAL_SECONDS = 1.25;
+const AMBIENT_EVENT_TRANSITION_IDLE_SECONDS = 0.6;
+const AMBIENT_RECENT_AUTHOR_WINDOW = 9;
+const AMBIENT_INITIAL_AHA_BURST_COUNT = 8;
+const AMBIENT_INITIAL_AHA_TEXT = '아하';
+const AMBIENT_BRIDGE_TEXTS = Object.freeze([
+    '뭣',
+    '헉',
+    'ㄹㅇ인가',
+    '오늘 폼 좋다 ㅋㅋ',
+    '그건...',
+    '너 좋다 너 잘한다',
+    '대회 나감?',
+    '심어주고~',
+    '대화가 된다',
+    '아쉬운 거지',
+    'ㅋㅋㅋㅋ',
+    '이건 인정',
+    '다음 장면 드가자',
+    '방금 뭐였지?',
+    '오 이 흐름 좋다',
+    '잠깐만 다시 보자',
+    '채팅도 집중 중',
+    '다음 얘기 궁금함'
+]);
 const CORE_ACTIONS = Object.freeze([
     Object.freeze({ id: 'kick', label: '강퇴', color: COLORS.NEGATIVE }),
     Object.freeze({ id: 'delete', label: '삭제', color: COLORS.WARNING }),
@@ -92,29 +133,65 @@ function copyRect(rect) {
 }
 
 /**
+ * 닉네임과 겹치지 않는 모델 전용 시청자 ID를 결정론적으로 만듭니다.
+ * @param {string} playerName - 로컬 플레이어 닉네임입니다.
+ * @param {number} [count=3] - 필요한 ID 개수입니다.
+ * @returns {string[]} ASCII 시청자 ID 목록입니다.
+ */
+function createPrivateViewerIds(playerName, count = 3) {
+    const playerNameKey = safeText(playerName, 24).toLocaleLowerCase('ko-KR');
+    const prefixes = ['v', 'q', 'z', 'm'];
+    const viewerIds = [];
+    for (let sequence = 1; viewerIds.length < count && sequence < 4096; sequence += 1) {
+        const prefix = prefixes[sequence % prefixes.length];
+        const candidate = `${prefix}${sequence.toString(36).padStart(3, '0')}`;
+        if (!playerNameKey || !replaceAeroLivePlayerNameForModel(
+            candidate,
+            playerName
+        ).includes(AERO_LIVE_PLAYER_NAME_TOKEN)) {
+            viewerIds.push(candidate);
+        }
+    }
+    return viewerIds;
+}
+
+/**
  * AERO LIVE의 주제 선택, 방송, 결과 화면을 하나의 수명주기에서 관리합니다.
  */
 export class AeroLiveScene extends BaseScene {
     /**
      * @param {object} sceneSystem - 엔진 씬 시스템입니다.
-     * @param {{runtime?:AeroLiveRuntime,aiService?:AeroLiveAiService,runtimeOptions?:object,topicId?:string}} [options={}] - 테스트 및 직접 진입 옵션입니다.
+     * @param {{runtime?:AeroLiveRuntime,aiService?:AeroLiveAiService,runtimeOptions?:object,topicId?:string,playerName?:string}} [options={}] - 테스트 및 직접 진입 옵션입니다.
      */
     constructor(sceneSystem, options = {}) {
         super(sceneSystem);
         this.options = options || {};
         this.isDestroyed = false;
-        this.mode = MODE_TOPIC_SELECT;
+        const initialPlayerName = validateAeroLivePlayerName(this.options.playerName);
+        this.playerName = initialPlayerName.valid ? initialPlayerName.name : '';
+        this.mode = this.playerName ? MODE_TOPIC_SELECT : MODE_NICKNAME;
+        this.pendingTopicId = typeof this.options.topicId === 'string'
+            ? safeText(this.options.topicId, 80)
+            : '';
+        this.nicknameInvalid = false;
         this.earlyEndModalOpen = false;
         this.inputClassificationPending = false;
         this.asyncGeneration = 0;
+        this.intentContextRevision = 0;
         this.elapsedVisualSeconds = 0;
         this.toastText = '';
         this.toastSecondsRemaining = 0;
         this.heroResponseText = '';
         this.heroResponseSecondsRemaining = 0;
+        this.heroResponseLabel = '';
+        this.heroResponseExpression = 'idle';
+        this.echoMemories = [];
+        this.pendingEchoCallback = null;
         this.ambientChatQueue = [];
         this.ambientChatBeatId = null;
         this.ambientChatSecondsRemaining = 0;
+        this.ambientBridgeSequence = 0;
+        this.ambientReservedViewerIds = new Set();
         this.keyLatch = new Map();
         this.buttons = [];
         this.topicButtons = [];
@@ -143,9 +220,15 @@ export class AeroLiveScene extends BaseScene {
                 else this.#openEarlyEndModal();
             }
         });
+        this.nicknameComposer = new AeroLiveNicknameComposer({
+            onSubmit: (name) => this.#submitNickname(name)
+        });
+        this.#syncButtonStates();
         this.#syncComposerDom();
-        if (typeof this.options.topicId === 'string' && this.options.topicId) {
-            this.#startBroadcast(this.options.topicId);
+        if (this.playerName && this.pendingTopicId) {
+            const topicId = this.pendingTopicId;
+            this.pendingTopicId = '';
+            this.#startBroadcast(topicId);
         }
     }
 
@@ -167,6 +250,8 @@ export class AeroLiveScene extends BaseScene {
         this.heroResponseSecondsRemaining = Math.max(0, this.heroResponseSecondsRemaining - deltaSeconds);
         if (this.heroResponseSecondsRemaining <= 0) {
             this.heroResponseText = '';
+            this.heroResponseLabel = '';
+            this.heroResponseExpression = 'idle';
         }
 
         this.#handleKeyboardInput();
@@ -227,6 +312,7 @@ export class AeroLiveScene extends BaseScene {
             return;
         }
         this.#syncViewport();
+        this.#syncButtonStates();
         this.#syncComposerDom();
     }
 
@@ -245,8 +331,10 @@ export class AeroLiveScene extends BaseScene {
         this.aiService?.destroy?.();
         this.#releaseButtons();
         this.composer?.destroy?.();
+        this.nicknameComposer?.destroy?.();
         this.renderer?.destroy?.();
         this.composer = null;
+        this.nicknameComposer = null;
         this.renderer = null;
         this.snapshot = null;
     }
@@ -263,6 +351,8 @@ export class AeroLiveScene extends BaseScene {
             UIWW: this.UIWW,
             UIOffsetX: this.UIOffsetX,
             mode: this.mode,
+            playerName: this.playerName,
+            nicknameInvalid: this.nicknameInvalid,
             layout: this.layout,
             snapshot: this.snapshot,
             topicSummaries: this.topicSummaries,
@@ -283,6 +373,9 @@ export class AeroLiveScene extends BaseScene {
             toastText: this.toastText,
             toastSecondsRemaining: this.toastSecondsRemaining,
             heroResponseText: this.heroResponseText,
+            heroResponseLabel: this.heroResponseLabel,
+            heroResponseExpression: this.heroResponseExpression,
+            echoMemories: this.echoMemories.map((memory) => ({ ...memory })),
             aiStatus: this.aiService?.getStatus?.() || 'AI 준비',
             campaign: this.campaign?.getSnapshot?.() || null
         };
@@ -442,6 +535,24 @@ export class AeroLiveScene extends BaseScene {
      * @private
      */
     #buildModalAndResultLayout() {
+        const nicknameW = Math.min(this.UIWW * 0.54, 680);
+        const nicknameH = Math.min(this.WH * 0.48, 360);
+        const nicknameX = this.UIOffsetX + (this.UIWW - nicknameW) * 0.5;
+        const nicknameY = (this.WH - nicknameH) * 0.5;
+        const nicknameInputH = Math.max(54, this.WH * 0.082);
+        this.layout.nicknamePanel = {
+            x: nicknameX,
+            y: nicknameY,
+            w: nicknameW,
+            h: nicknameH
+        };
+        this.layout.nicknameComposer = {
+            x: nicknameX + this.layout.panelPad,
+            y: nicknameY + nicknameH - this.layout.panelPad - nicknameInputH,
+            w: Math.max(1, nicknameW - this.layout.panelPad * 2),
+            h: nicknameInputH
+        };
+
         const modalW = Math.min(this.UIWW * 0.44, 560);
         const modalH = Math.min(this.WH * 0.36, 280);
         const modalX = this.UIOffsetX + (this.UIWW - modalW) * 0.5;
@@ -703,22 +814,64 @@ export class AeroLiveScene extends BaseScene {
      * @private
      */
     #syncComposerDom() {
-        if (!this.composer || !this.layout?.composer) {
-            return;
+        if (this.composer && this.layout?.composer) {
+            const visible = this.mode === MODE_LIVE
+                && this.snapshot?.status === 'live'
+                && !this.earlyEndModalOpen;
+            const messagesRemaining = finiteNumber(this.snapshot?.resources?.playerMessagesRemaining, 0);
+            this.composer.sync({
+                rect: this.layout.composer,
+                visible,
+                disabled: !visible || this.inputClassificationPending || messagesRemaining <= 0,
+                pending: this.inputClassificationPending,
+                messagesRemaining,
+                playerName: this.playerName,
+                uiWidth: this.UIWW,
+                viewportHeight: this.WH
+            });
         }
-        const visible = this.mode === MODE_LIVE
-            && this.snapshot?.status === 'live'
-            && !this.earlyEndModalOpen;
-        const messagesRemaining = finiteNumber(this.snapshot?.resources?.playerMessagesRemaining, 0);
-        this.composer.sync({
-            rect: this.layout.composer,
-            visible,
-            disabled: !visible || this.inputClassificationPending || messagesRemaining <= 0,
-            pending: this.inputClassificationPending,
-            messagesRemaining,
+
+        this.nicknameComposer?.sync?.({
+            rect: this.layout?.nicknameComposer,
+            visible: this.mode === MODE_NICKNAME,
+            invalid: this.nicknameInvalid,
             uiWidth: this.UIWW,
             viewportHeight: this.WH
         });
+    }
+
+    /**
+     * 시작 화면의 닉네임을 로컬 표시 상태로만 확정합니다.
+     * @param {*} rawName - DOM 입력에서 받은 원문입니다.
+     * @private
+     */
+    #submitNickname(rawName) {
+        if (this.isDestroyed || this.mode !== MODE_NICKNAME) {
+            return;
+        }
+        const validation = validateAeroLivePlayerName(
+            rawName ?? this.nicknameComposer?.getValue?.()
+        );
+        if (!validation.valid) {
+            this.nicknameInvalid = true;
+            this.#showToast(validation.reason);
+            this.nicknameComposer?.focus?.();
+            this.#syncComposerDom();
+            return;
+        }
+
+        this.playerName = validation.name;
+        this.nicknameInvalid = false;
+        this.mode = MODE_TOPIC_SELECT;
+        this.#syncButtonStates();
+        this.#syncComposerDom();
+        if (this.pendingTopicId) {
+            const topicId = this.pendingTopicId;
+            this.pendingTopicId = '';
+            this.#startBroadcast(topicId);
+            return;
+        }
+        this.#showToast(`${this.playerName}님, 방송 주제를 선택해 주세요.`);
     }
 
     /**
@@ -764,26 +917,38 @@ export class AeroLiveScene extends BaseScene {
      * @private
      */
     #startBroadcast(topicId) {
-        if (this.isDestroyed || !topicId || this.snapshot?.status === 'live') {
+        const safeTopicId = safeText(topicId, 80);
+        if (this.isDestroyed || !safeTopicId || this.snapshot?.status === 'live') {
+            return;
+        }
+        if (!this.playerName) {
+            this.pendingTopicId = safeTopicId;
+            this.mode = MODE_NICKNAME;
+            this.#syncButtonStates();
+            this.#syncComposerDom();
             return;
         }
 
         let campaignPrepared = false;
         try {
-            const initialMetrics = this.campaign.prepareBroadcast(topicId);
+            const initialMetrics = this.campaign.prepareBroadcast(safeTopicId);
             campaignPrepared = true;
             if (this.injectedRuntimePending && this.snapshot?.status === 'idle') {
                 this.injectedRuntimePending = false;
             } else {
                 this.#replaceRuntime(initialMetrics);
             }
-            this.snapshot = this.runtime.startBroadcast(topicId);
+            this.snapshot = this.runtime.startBroadcast(safeTopicId);
             this.mode = MODE_LIVE;
             this.earlyEndModalOpen = false;
             this.selectedCoreChatId = null;
             this.timerMaximums = createTimerMaximums(this.runtimeOptions);
             this.heroResponseText = '';
             this.heroResponseSecondsRemaining = 0;
+            this.heroResponseLabel = '';
+            this.heroResponseExpression = 'idle';
+            this.echoMemories = [];
+            this.pendingEchoCallback = null;
             this.#clearAmbientChatQueue();
             this.#consumeRuntimeEvents();
             this.#syncSnapshotState();
@@ -828,11 +993,16 @@ export class AeroLiveScene extends BaseScene {
      */
     #replaceRuntime(initialMetrics = null) {
         this.asyncGeneration += 1;
+        this.intentContextRevision += 1;
         this.aiService?.abortAll?.();
         this.inputClassificationPending = false;
         this.selectedCoreChatId = null;
         this.heroResponseText = '';
         this.heroResponseSecondsRemaining = 0;
+        this.heroResponseLabel = '';
+        this.heroResponseExpression = 'idle';
+        this.echoMemories = [];
+        this.pendingEchoCallback = null;
         this.#clearAmbientChatQueue();
         const nextRuntimeOptions = initialMetrics
             ? {
@@ -1009,34 +1179,64 @@ export class AeroLiveScene extends BaseScene {
         this.#syncButtonStates();
         this.#syncComposerDom();
         const requestGeneration = this.asyncGeneration;
+        const requestIntentRevision = this.intentContextRevision;
+        const requestBeatId = safeText(this.snapshot?.currentBeat?.id, 80);
+        const requestCoreChatId = this.#getActiveCoreChatId();
+        const modelMessage = safeText(
+            replaceAeroLivePlayerNameForModel(message, this.playerName),
+            maxChars
+        );
+        const modelText = (value, maxLength = 240) => safeText(
+            replaceAeroLivePlayerNameForModel(value, this.playerName),
+            maxLength
+        );
         const requestContext = {
-            message,
-            topic: this.snapshot?.topic?.title || this.snapshot?.topic?.id || '',
-            heroText: this.snapshot?.currentBeat?.heroText || '',
-            mood: this.snapshot?.currentBeat?.mood || '',
-            coreChatText: this.snapshot?.activeCoreChat?.text || '',
-            coreChatViewerId: this.snapshot?.activeCoreChat?.author || '',
+            message: modelMessage,
+            topic: modelText(this.snapshot?.topic?.title || this.snapshot?.topic?.id || '', 80),
+            heroText: modelText(this.snapshot?.currentBeat?.heroText || '', 240),
+            mood: modelText(this.snapshot?.currentBeat?.mood || '', 60),
+            coreChatText: modelText(this.snapshot?.activeCoreChat?.text || '', 180),
+            coreChatViewerId: modelText(this.snapshot?.activeCoreChat?.author || '', 24),
             viewerIds: this.#getViewerIds()
         };
 
         try {
             const classification = await this.aiService.classifyPlayerMessage(requestContext);
-            if (this.isDestroyed || requestGeneration !== this.asyncGeneration) {
+            const currentBeatId = safeText(this.snapshot?.currentBeat?.id, 80);
+            const currentCoreChatId = this.#getActiveCoreChatId();
+            if (this.isDestroyed
+                || requestGeneration !== this.asyncGeneration
+                || this.mode !== MODE_LIVE
+                || this.snapshot?.status !== 'live'
+                || requestIntentRevision !== this.intentContextRevision
+                || currentBeatId !== requestBeatId
+                || currentCoreChatId !== requestCoreChatId
+                || classification?.discarded === true) {
                 return;
             }
 
-            const response = this.runtime.submitPlayerMessage(message, classification.intent);
+            const response = this.runtime.submitPlayerMessage(modelMessage, classification.intent);
             if (Array.isArray(classification.reaction_chats)
                 && classification.reaction_chats.length > 0
                 && response?.accepted
                 && this.runtime.getSnapshot()?.status === 'live') {
-                this.runtime.addGeneratedChats(classification.reaction_chats, classification.source || 'model-reaction');
+                const reactionChats = classification.reaction_chats.map((chat) => ({
+                    ...chat,
+                    text: this.#toPlayerNameTemplate(
+                        chat?.text,
+                        AERO_CONSTANTS.AI.GENERATED_CHAT_MAX_CHARS
+                    )
+                }));
+                this.runtime.addGeneratedChats(reactionChats, classification.source || 'model-reaction');
+            }
+            if (response?.accepted) {
+                this.#applyPlayerEcho(classification, modelMessage, requestBeatId);
             }
             this.#refreshRuntimeState();
 
             if (response?.accepted) {
                 this.composer?.clear?.();
-                this.#showToast(classification.reason || '위장 채팅이 방송 여론에 반영되었습니다.');
+                this.#showToast(classification.reason || '채팅이 방송 여론에 반영되었습니다.');
             } else {
                 this.#showToast(classification.reason || response?.reason || '이 채팅은 전송할 수 없습니다.');
             }
@@ -1054,7 +1254,72 @@ export class AeroLiveScene extends BaseScene {
     }
 
     /**
-     * beat 시작 2초 뒤부터 안전 폴백과 AI 채팅을 2초 간격 큐로 방출합니다.
+     * 검증된 AI 직접 답변, 다음 비트 콜백과 결과용 기억을 템플릿 상태로 보관합니다.
+     * @param {object} classification - 의도 계약을 통과한 모델 결과입니다.
+     * @param {string} modelMessage - 실명 대신 `{playerName}`을 담은 플레이어 메시지입니다.
+     * @param {string} beatId - 응답을 요청한 비트 ID입니다.
+     * @private
+     */
+    #applyPlayerEcho(classification, modelMessage, beatId) {
+        const heroReply = this.#toPlayerNameTemplate(classification?.hero_reply, 240);
+        const callbackText = this.#toPlayerNameTemplate(classification?.callback_text, 180);
+        const intent = safeText(classification?.intent, 24);
+        const requestedExpression = safeText(classification?.hero_expression, 24);
+        const expression = HERO_EXPRESSIONS.has(requestedExpression)
+            ? requestedExpression
+            : this.#getIntentExpression(intent);
+
+        if (heroReply) {
+            this.heroResponseText = heroReply;
+            this.heroResponseSecondsRemaining = HERO_RESPONSE_SECONDS;
+            this.heroResponseLabel = '채팅 답변';
+            this.heroResponseExpression = expression;
+            this.echoMemories = [
+                ...this.echoMemories,
+                {
+                    playerMessage: safeText(modelMessage, 180),
+                    heroReply,
+                    callbackText,
+                    intent,
+                    expression
+                }
+            ].slice(-ECHO_MEMORY_LIMIT);
+        }
+        if (callbackText) {
+            this.pendingEchoCallback = {
+                originBeatId: beatId,
+                text: callbackText,
+                sentiment: intent === 'praise'
+                    ? 'positive'
+                    : (intent === 'provocation' ? 'negative' : 'neutral')
+            };
+        }
+    }
+
+    /** @returns {string} 의도에 대응하는 안전한 기본 표정입니다. @private */
+    #getIntentExpression(intent) {
+        if (intent === 'praise') return 'happy';
+        if (intent === 'provocation') return 'angry';
+        if (intent === 'rebuttal') return 'shocked';
+        return 'idle';
+    }
+
+    /**
+     * 모델 경계를 오가는 동적 문자열에서 닉네임 실값을 로컬 치환 토큰으로 고정합니다.
+     * @param {*} value - 템플릿화할 문자열입니다.
+     * @param {number} [maxChars=240] - 최대 코드포인트 수입니다.
+     * @returns {string} 실제 닉네임이 없는 안전한 템플릿입니다.
+     * @private
+     */
+    #toPlayerNameTemplate(value, maxChars = 240) {
+        return safeText(
+            replaceAeroLivePlayerNameForModel(value, this.playerName),
+            maxChars
+        );
+    }
+
+    /**
+     * beat 시작 0.6초 뒤부터 안전 폴백과 AI 채팅을 1.25초 간격 큐로 방출합니다.
      * @param {object} event - beat-started 런타임 이벤트입니다.
      * @returns {Promise<void>} 비동기 채팅 생성 완료 Promise입니다.
      * @private
@@ -1063,18 +1328,40 @@ export class AeroLiveScene extends BaseScene {
         const requestGeneration = this.asyncGeneration;
         const beatId = event.beatId;
         const fallbackChats = Array.isArray(event.fallbackChats) ? event.fallbackChats : [];
+        const modelText = (value, maxLength = 240) => safeText(
+            replaceAeroLivePlayerNameForModel(value, this.playerName),
+            maxLength
+        );
+        const modelFallbackChats = fallbackChats.map((chat) => ({
+            viewerId: modelText(chat?.viewerId || chat?.viewer_id, 24),
+            sentiment: safeText(chat?.sentiment, 24),
+            text: modelText(chat?.text, 180)
+        }));
         const context = {
-            topic: event.topic?.title || event.topic?.id || '',
-            heroText: event.heroText || '',
-            mood: event.mood || '',
+            topic: modelText(event.topic?.title || event.topic?.id || '', 80),
+            heroText: modelText(event.heroText || '', 240),
+            mood: modelText(event.mood || '', 60),
             opinion: this.snapshot?.metrics?.opinion,
-            fallbackChats,
+            fallbackChats: modelFallbackChats,
             viewerIds: this.#getViewerIds(fallbackChats)
         };
 
+        const reservedViewerIds = new Set(context.viewerIds);
+        const initialAhaChats = this.#createInitialAhaBurst(event, reservedViewerIds);
+        const fallbackQueue = fallbackChats.map((chat) => ({ ...chat, source: 'fallback' }));
+        const echoCallback = this.#takePendingEchoCallback(event, reservedViewerIds);
+        if (echoCallback) {
+            const callbackIndex = Math.min(2, fallbackQueue.length);
+            fallbackQueue.splice(callbackIndex, 0, echoCallback);
+        }
         this.ambientChatBeatId = beatId;
-        this.ambientChatQueue = fallbackChats.map((chat) => ({ ...chat, source: 'fallback' }));
+        this.ambientChatQueue = [
+            ...initialAhaChats,
+            ...fallbackQueue
+        ];
         this.ambientChatSecondsRemaining = AMBIENT_CHAT_START_DELAY_SECONDS;
+        this.ambientBridgeSequence = 0;
+        this.ambientReservedViewerIds = reservedViewerIds;
 
         try {
             const generated = await this.aiService.generateChatBatch(context);
@@ -1089,6 +1376,10 @@ export class AeroLiveScene extends BaseScene {
             if (modelChats.length > 0) {
                 this.ambientChatQueue.push(...modelChats.slice(0, 24).map((chat) => ({
                     ...chat,
+                    text: this.#toPlayerNameTemplate(
+                        chat?.text,
+                        AERO_CONSTANTS.AI.GENERATED_CHAT_MAX_CHARS
+                    ),
                     source: generated.source || 'model'
                 })));
             }
@@ -1098,6 +1389,111 @@ export class AeroLiveScene extends BaseScene {
             }
             console.warn('[AeroLiveScene] 일반 채팅 폴백', error);
         }
+    }
+
+    /**
+     * 이전 비트의 최신 플레이어 채팅을 다음 비트의 제품 시청자 한 명이 한 번만 회상하게 합니다.
+     * @param {object} event - 새 beat-started 이벤트입니다.
+     * @param {Set<string>} reservedViewerIds - 현재 모델 슬롯에 예약된 시청자 ID입니다.
+     * @returns {object|null} 다음 비트 큐에 삽입할 콜백 채팅입니다.
+     * @private
+     */
+    #takePendingEchoCallback(event, reservedViewerIds) {
+        const pending = this.pendingEchoCallback;
+        const nextBeatId = safeText(event?.beatId, 80);
+        if (!pending || !nextBeatId || pending.originBeatId === nextBeatId) {
+            return null;
+        }
+
+        const recentAuthors = new Set((Array.isArray(this.snapshot?.chats) ? this.snapshot.chats : [])
+            .slice(-AMBIENT_RECENT_AUTHOR_WINDOW)
+            .map((chat) => safeText(chat?.viewer_id || chat?.author, 24))
+            .filter(Boolean));
+        const bannedAuthors = new Set((Array.isArray(this.snapshot?.bannedAuthors)
+            ? this.snapshot.bannedAuthors
+            : [])
+            .map((author) => safeText(author, 24))
+            .filter(Boolean));
+        const viewerPool = (Array.isArray(AERO_LIVE_VIEWER_IDS) ? AERO_LIVE_VIEWER_IDS : [])
+            .map((candidate) => safeText(candidate, 24))
+            .filter((candidate) => candidate
+                && (!this.playerName
+                    || !replaceAeroLivePlayerNameForModel(
+                        candidate,
+                        this.playerName
+                    ).includes(AERO_LIVE_PLAYER_NAME_TOKEN))
+                && !bannedAuthors.has(candidate));
+        const viewerId = viewerPool.find((candidate) => !recentAuthors.has(candidate)
+            && !(reservedViewerIds instanceof Set && reservedViewerIds.has(candidate)))
+            || viewerPool.find((candidate) => !recentAuthors.has(candidate))
+            || viewerPool.find((candidate) => !(reservedViewerIds instanceof Set
+                && reservedViewerIds.has(candidate)))
+            || viewerPool[0];
+        if (!viewerId) {
+            return null;
+        }
+        this.pendingEchoCallback = null;
+        reservedViewerIds?.add?.(viewerId);
+        return {
+            viewer_id: viewerId,
+            sentiment: pending.sentiment || 'neutral',
+            text: safeText(pending.text, 180),
+            source: 'echo-callback'
+        };
+    }
+
+    /**
+     * 방송 첫 비트에만 모델 입력과 무관한 `아하` 채팅을 큐 선두에 충분히 채웁니다.
+     * 모델 슬롯, 최근 화면 작성자와 강퇴 작성자를 피해 서로 다른 제품 시청자 ID를 고릅니다.
+     * @param {object} event - beat-started 런타임 이벤트입니다.
+     * @param {Set<string>} reservedViewerIds - 모델 배치에 예약한 시청자 ID입니다.
+     * @returns {object[]} 결정론적인 로컬 오프닝 채팅 목록입니다.
+     * @private
+     */
+    #createInitialAhaBurst(event, reservedViewerIds) {
+        if (Math.floor(finiteNumber(event?.beatIndex, -1)) !== 0) {
+            return [];
+        }
+
+        const recentAuthors = new Set((Array.isArray(this.snapshot?.chats) ? this.snapshot.chats : [])
+            .slice(-AMBIENT_RECENT_AUTHOR_WINDOW)
+            .map((chat) => safeText(chat?.viewer_id || chat?.author, 24))
+            .filter(Boolean));
+        const bannedAuthors = new Set((Array.isArray(this.snapshot?.bannedAuthors)
+            ? this.snapshot.bannedAuthors
+            : [])
+            .map((author) => safeText(author, 24))
+            .filter(Boolean));
+        const excludedAuthors = new Set([
+            ...recentAuthors,
+            ...bannedAuthors,
+            ...(reservedViewerIds instanceof Set ? reservedViewerIds : [])
+        ]);
+        const viewerPool = (Array.isArray(AERO_LIVE_VIEWER_IDS) ? AERO_LIVE_VIEWER_IDS : [])
+            .map((viewerId) => safeText(viewerId, 24))
+            .filter((viewerId) => viewerId
+                && (!this.playerName
+                    || !replaceAeroLivePlayerNameForModel(
+                        viewerId,
+                        this.playerName
+                    ).includes(AERO_LIVE_PLAYER_NAME_TOKEN)));
+        const chats = [];
+        for (const viewerId of viewerPool) {
+            if (chats.length >= AMBIENT_INITIAL_AHA_BURST_COUNT) {
+                break;
+            }
+            if (excludedAuthors.has(viewerId)) {
+                continue;
+            }
+            excludedAuthors.add(viewerId);
+            chats.push({
+                viewer_id: viewerId,
+                sentiment: 'neutral',
+                text: AMBIENT_INITIAL_AHA_TEXT,
+                source: 'opening-aha'
+            });
+        }
+        return chats;
     }
 
     /**
@@ -1112,15 +1508,14 @@ export class AeroLiveScene extends BaseScene {
             || this.snapshot?.currentBeat?.id !== this.ambientChatBeatId) {
             return;
         }
-        if (this.ambientChatQueue.length === 0) {
-            this.ambientChatSecondsRemaining = Math.max(0, this.ambientChatSecondsRemaining);
-            return;
-        }
-
         this.ambientChatSecondsRemaining -= Math.max(0, finiteNumber(deltaSeconds, 0));
         let emitted = false;
-        while (this.ambientChatSecondsRemaining <= 0 && this.ambientChatQueue.length > 0) {
-            const chat = this.ambientChatQueue.shift();
+        while (this.ambientChatSecondsRemaining <= 0) {
+            const chat = this.ambientChatQueue.shift() || this.#createAmbientBridgeChat();
+            if (!chat) {
+                this.ambientChatSecondsRemaining = AMBIENT_CHAT_INTERVAL_SECONDS;
+                break;
+            }
             this.runtime.addGeneratedChats([chat], chat?.source || 'ambient');
             this.ambientChatSecondsRemaining += AMBIENT_CHAT_INTERVAL_SECONDS;
             emitted = true;
@@ -1130,11 +1525,100 @@ export class AeroLiveScene extends BaseScene {
         }
     }
 
+    /**
+     * AI 배치가 아직 대기 중이거나 모두 소진된 동안 안전한 일반 채팅 한 건을 만듭니다.
+     * 최근 화면의 작성자와 강퇴된 작성자를 피하고 제품 소유 ID만 사용합니다.
+     * @returns {object|null} 런타임에 추가할 결정론적 보충 채팅입니다.
+     * @private
+     */
+    #createAmbientBridgeChat() {
+        const viewerPool = (Array.isArray(AERO_LIVE_VIEWER_IDS) ? AERO_LIVE_VIEWER_IDS : [])
+            .map((viewerId) => safeText(viewerId, 24))
+            .filter((viewerId) => viewerId
+                && (!this.playerName
+                    || !replaceAeroLivePlayerNameForModel(
+                        viewerId,
+                        this.playerName
+                    ).includes(AERO_LIVE_PLAYER_NAME_TOKEN)));
+        if (viewerPool.length === 0 || AMBIENT_BRIDGE_TEXTS.length === 0) {
+            return null;
+        }
+
+        const recentAuthors = new Set((Array.isArray(this.snapshot?.chats) ? this.snapshot.chats : [])
+            .slice(-AMBIENT_RECENT_AUTHOR_WINDOW)
+            .map((chat) => safeText(chat?.viewer_id || chat?.author, 24))
+            .filter(Boolean));
+        const recentTexts = new Set((Array.isArray(this.snapshot?.chats) ? this.snapshot.chats : [])
+            .slice(-AMBIENT_RECENT_AUTHOR_WINDOW)
+            .map((chat) => safeText(chat?.text, 180))
+            .filter(Boolean));
+        const bannedAuthors = new Set((Array.isArray(this.snapshot?.bannedAuthors)
+            ? this.snapshot.bannedAuthors
+            : [])
+            .map((author) => safeText(author, 24))
+            .filter(Boolean));
+        const reservedViewerIds = this.ambientReservedViewerIds instanceof Set
+            ? this.ambientReservedViewerIds
+            : new Set();
+        const beatIndex = Math.max(0, Math.floor(finiteNumber(this.snapshot?.currentBeat?.index, 0)));
+        const sequence = this.ambientBridgeSequence;
+        const poolStart = ((beatIndex * 15) + (sequence * 7)) % viewerPool.length;
+        let viewerId = null;
+        for (let offset = 0; offset < viewerPool.length; offset += 1) {
+            const candidate = viewerPool[(poolStart + offset) % viewerPool.length];
+            if (!recentAuthors.has(candidate)
+                && !bannedAuthors.has(candidate)
+                && !reservedViewerIds.has(candidate)) {
+                viewerId = candidate;
+                break;
+            }
+        }
+        if (!viewerId) {
+            return null;
+        }
+
+        this.ambientBridgeSequence += 1;
+        const textStart = ((beatIndex * 5) + sequence) % AMBIENT_BRIDGE_TEXTS.length;
+        let text = AMBIENT_BRIDGE_TEXTS[textStart];
+        for (let offset = 0; offset < AMBIENT_BRIDGE_TEXTS.length; offset += 1) {
+            const candidate = AMBIENT_BRIDGE_TEXTS[(textStart + offset) % AMBIENT_BRIDGE_TEXTS.length];
+            if (!recentTexts.has(candidate)) {
+                text = candidate;
+                break;
+            }
+        }
+        return {
+            viewer_id: viewerId,
+            sentiment: sequence % 3 === 0 ? 'positive' : 'neutral',
+            text,
+            source: 'bridge-fallback'
+        };
+    }
+
+    /**
+     * 핵심·후원 사건 경계 뒤 다음 일반 채팅까지의 전환 공백을 1초 미만으로 줄입니다.
+     * 일반 채팅끼리의 기본 1.25초 cadence는 그대로 유지합니다.
+     * @private
+     */
+    #shortenAmbientTransitionIdle() {
+        if (!this.ambientChatBeatId
+            || this.snapshot?.currentBeat?.id !== this.ambientChatBeatId) {
+            return;
+        }
+        this.ambientChatSecondsRemaining = Math.min(
+            this.ambientChatSecondsRemaining,
+            AMBIENT_EVENT_TRANSITION_IDLE_SECONDS
+        );
+    }
+
     /** 현재 beat에 예약된 일반 채팅을 모두 폐기합니다. @private */
     #clearAmbientChatQueue() {
         this.ambientChatQueue = [];
         this.ambientChatBeatId = null;
         this.ambientChatSecondsRemaining = 0;
+        this.ambientBridgeSequence = 0;
+        this.ambientReservedViewerIds = new Set();
+        this.pendingEchoCallback = null;
     }
 
     /**
@@ -1159,10 +1643,12 @@ export class AeroLiveScene extends BaseScene {
         }
 
         if (event.type === 'beat-started') {
+            this.intentContextRevision += 1;
             void this.#generateAmbientChats(event);
             return;
         }
         if (event.type === 'core-chat-started') {
+            this.intentContextRevision += 1;
             this.selectedCoreChatId = null;
             this.timerMaximums.core = Math.max(
                 Number.EPSILON,
@@ -1171,6 +1657,7 @@ export class AeroLiveScene extends BaseScene {
                     AERO_LIVE_DEFAULT_TIMING.coreChatSeconds
                 )
             );
+            this.#shortenAmbientTransitionIdle();
             return;
         }
         if (event.type === 'donation-started') {
@@ -1181,24 +1668,33 @@ export class AeroLiveScene extends BaseScene {
                     AERO_LIVE_DEFAULT_TIMING.donationSeconds
                 )
             );
+            this.#shortenAmbientTransitionIdle();
             return;
         }
         if (event.type === 'donation-resolved') {
             this.heroResponseText = safeText(event.heroResponse, 240);
             this.heroResponseSecondsRemaining = 4.5;
+            this.heroResponseLabel = '후원 대응';
+            this.heroResponseExpression = event.timedOut
+                ? 'embarrassed'
+                : (event.appropriate ? 'happy' : 'sad');
+            this.#shortenAmbientTransitionIdle();
             this.#showToast(event.timedOut
                 ? '후원 응답 시간이 지나 자동으로 대응했습니다.'
                 : (event.appropriate ? '후원 의도에 맞는 디렉션이었습니다.' : '후원 의도와 어긋난 디렉션이었습니다.'));
             return;
         }
         if (event.type === 'core-chat-resolved') {
+            this.intentContextRevision += 1;
             this.selectedCoreChatId = null;
+            this.#shortenAmbientTransitionIdle();
             if (event.action === 'timeout') {
                 this.#showToast('핵심 채팅 대응 시간이 지났습니다.');
             }
             return;
         }
         if (event.type === 'core-chat-cancelled') {
+            this.intentContextRevision += 1;
             this.selectedCoreChatId = null;
             return;
         }
@@ -1276,12 +1772,24 @@ export class AeroLiveScene extends BaseScene {
             ...(Array.isArray(fallbackChats) ? fallbackChats : []),
             ...(Array.isArray(this.snapshot?.chats) ? this.snapshot.chats : [])
         ]
+            .filter((chat) => chat?.source !== 'player' && chat?.masked !== true)
             .map((chat) => safeText(chat?.viewer_id || chat?.viewerId || chat?.author || chat?.nickname, 24))
             .filter(Boolean);
-        const uniqueContextualIds = [...new Set(contextualIds)].slice(-6);
+        const isPrivateIdentity = (viewerId) => {
+            const viewerKey = viewerId.toLocaleLowerCase('ko-KR');
+            return viewerKey === 'aero_mask'
+                || (this.playerName && replaceAeroLivePlayerNameForModel(
+                    viewerId,
+                    this.playerName
+                ).includes(AERO_LIVE_PLAYER_NAME_TOKEN));
+        };
+        const privateViewerIds = createPrivateViewerIds(this.playerName);
+        const uniqueContextualIds = [...new Set(contextualIds)]
+            .filter((viewerId) => !isPrivateIdentity(viewerId))
+            .slice(-6);
         const viewerPool = (Array.isArray(AERO_LIVE_VIEWER_IDS) ? AERO_LIVE_VIEWER_IDS : [])
             .map((viewerId) => safeText(viewerId, 24))
-            .filter(Boolean);
+            .filter((viewerId) => viewerId && !isPrivateIdentity(viewerId));
         const poolOffset = viewerPool.length > 0
             ? (Math.max(0, Math.floor(finiteNumber(this.snapshot?.currentBeat?.index, 0))) * 7) % viewerPool.length
             : 0;
@@ -1291,9 +1799,10 @@ export class AeroLiveScene extends BaseScene {
         const uniqueIds = [...new Set([
             ...uniqueContextualIds,
             ...rotatedPool,
-            ...contextualIds
+            ...contextualIds.filter((viewerId) => !isPrivateIdentity(viewerId)),
+            ...privateViewerIds
         ])].slice(0, 12);
-        return uniqueIds.length > 0 ? uniqueIds : ['aqua_fan', 'cloud_note', 'bubble_pop'];
+        return uniqueIds.length > 0 ? uniqueIds : privateViewerIds;
     }
 
     /**

@@ -81,8 +81,10 @@ export const AERO_LIVE_SCENE_CONSTANTS = Object.freeze({
     }),
     AI: Object.freeze({
         ENABLED: true,
+        CHAT_API_MODEL: 'gemini-3.6-flash',
+        INTENT_API_MODEL: 'gemini-3.5-flash-lite',
         API_MODEL: 'gemini-3.5-flash-lite',
-        PROMPT_REVISION: 'aero-live-chat-v2',
+        PROMPT_REVISION: 'aero-live-chat-v4',
         SCHEMA_VERSION: 'aero-live-ai-v1',
         REQUEST_TIMEOUT_MS: 8000,
         THINKING_LEVEL: 'low',
@@ -90,14 +92,14 @@ export const AERO_LIVE_SCENE_CONSTANTS = Object.freeze({
         INTENT_MAX_OUTPUT_TOKENS: 768,
         CHAT_BATCH_SIZE: 16,
         MAX_CACHE_ENTRIES: 48,
-        GENERATION_SEED: 240729,
+        MAX_REQUEST_QUEUE_SIZE: 32,
         PLAYER_MESSAGE_MAX_CHARS: 140,
         GENERATED_CHAT_MAX_CHARS: 64
     }),
     INPUT: Object.freeze({
-        PLACEHOLDER: '시청자로 위장해 여론에 개입하세요',
+        PLACEHOLDER: '방송에 남길 채팅을 입력하세요',
         SEND_LABEL: '전송',
-        MASK_LABEL: '가면 계정'
+        MASK_LABEL: '플레이어'
     }),
     INSTRUCTIONS: Object.freeze([
         Object.freeze({ id: 'accept', label: '수락', shortLabel: '수락' }),
