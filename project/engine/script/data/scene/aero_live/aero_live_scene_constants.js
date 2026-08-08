@@ -3,23 +3,47 @@
  */
 export const AERO_LIVE_SCENE_CONSTANTS = Object.freeze({
     ASSET: Object.freeze({
-        HERO_FALLBACK_EXPRESSION: 'default',
-        HERO_EXPRESSION_PATHS: Object.freeze({
-            default: '../asset/image/chara/idle.gif',
-            idle: '../asset/image/chara/idle.gif',
-            neutral: '../asset/image/chara/idle.gif',
-            smile: '../asset/image/chara/happy.png',
-            laugh: '../asset/image/chara/happy.png',
-            happy: '../asset/image/chara/happy.png',
-            angry: '../asset/image/chara/angry.png',
-            firm: '../asset/image/chara/angry.png',
-            sad: '../asset/image/chara/sad.png',
-            tired: '../asset/image/chara/sad.png',
-            anxious: '../asset/image/chara/sad.png',
-            shocked: '../asset/image/chara/shocked.png',
-            surprised: '../asset/image/chara/shocked.png',
-            embarrassed: '../asset/image/chara/embarrassed.png',
-            flustered: '../asset/image/chara/embarrassed.png'
+        LIVE_BACKGROUND_PATH: '../asset/image/aero_live/broadcast_background_mac.png',
+        LIVE_BACKGROUND_LAYOUT: Object.freeze({
+            REFERENCE_WIDTH: 3840,
+            REFERENCE_HEIGHT: 2160,
+            MAIN_FRAME: Object.freeze({ x: 82, y: 58, w: 2386, h: 2074 }),
+            MAIN_CONTENT: Object.freeze({ x: 140, y: 188, w: 2273, h: 1873 }),
+            MAIN_STATUS: Object.freeze({ x: 140, y: 188, w: 2273, h: 144 }),
+            CHAT_FRAME: Object.freeze({ x: 2520, y: 105, w: 1265, h: 1327 }),
+            CHAT_CONTENT: Object.freeze({ x: 2550, y: 187, w: 1206, h: 1208 }),
+            PRODUCER_FRAME: Object.freeze({ x: 2520, y: 1462, w: 1265, h: 670 }),
+            PRODUCER_CONTENT: Object.freeze({ x: 2550, y: 1541, w: 1206, h: 570 })
+        }),
+        HERO_FALLBACK_POSE: 'neutral',
+        HERO_POSE_PATHS: Object.freeze({
+            neutral: '../asset/image/chara/v1.png',
+            happy: '../asset/image/chara/vhap.png',
+            angry: '../asset/image/chara/vang.png',
+            'angry-strong': '../asset/image/chara/vang2.png',
+            sad: '../asset/image/chara/vsad.png',
+            shocked: '../asset/image/chara/vsur.png',
+            embarrassed: '../asset/image/chara/vfru.png',
+            'blink-half': '../asset/image/chara/vclose1.png',
+            'blink-closed': '../asset/image/chara/vclose2.png',
+            controller: '../asset/image/chara/vctrl.png'
+        }),
+        HERO_EXPRESSION_POSES: Object.freeze({
+            default: 'neutral',
+            idle: 'neutral',
+            neutral: 'neutral',
+            smile: 'neutral',
+            laugh: 'happy',
+            happy: 'happy',
+            angry: 'angry',
+            firm: 'angry',
+            sad: 'sad',
+            tired: 'sad',
+            anxious: 'embarrassed',
+            shocked: 'shocked',
+            surprised: 'shocked',
+            embarrassed: 'embarrassed',
+            flustered: 'embarrassed'
         })
     }),
     UI: Object.freeze({

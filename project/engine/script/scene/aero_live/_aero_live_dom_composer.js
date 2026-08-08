@@ -20,6 +20,8 @@ export class AeroLiveDomComposer {
         this.compositionActive = false;
         this.compositionSubmitSuppressed = false;
         this.compositionSuppressionGeneration = 0;
+        this.compositionEnterSubmitPending = false;
+        this.compositionEnterSubmitGeneration = 0;
         this.#createDom();
     }
 
@@ -122,6 +124,8 @@ export class AeroLiveDomComposer {
         this.compositionActive = false;
         this.compositionSubmitSuppressed = false;
         this.compositionSuppressionGeneration += 1;
+        this.compositionEnterSubmitPending = false;
+        this.compositionEnterSubmitGeneration += 1;
         this.onSubmit = () => {};
         this.onEscape = () => {};
     }
@@ -138,6 +142,27 @@ export class AeroLiveDomComposer {
             if (!this.destroyed && generation === this.compositionSuppressionGeneration) {
                 this.compositionSubmitSuppressed = false;
             }
+        }, 0);
+    }
+
+    /** 한글 조합을 끝낸 Enter를 조합 종료 직후 한 번만 전송합니다. @private */
+    #queueCompositionEnterSubmit() {
+        this.compositionEnterSubmitPending = true;
+        this.compositionEnterSubmitGeneration += 1;
+        const generation = this.compositionEnterSubmitGeneration;
+        const schedule = typeof window !== 'undefined' && typeof window.setTimeout === 'function'
+            ? window.setTimeout.bind(window)
+            : setTimeout;
+        schedule(() => {
+            if (this.destroyed
+                || generation !== this.compositionEnterSubmitGeneration
+                || this.compositionActive
+                || !this.compositionEnterSubmitPending) {
+                return;
+            }
+            this.compositionEnterSubmitPending = false;
+            this.compositionSubmitSuppressed = false;
+            this.onSubmit(this.getValue());
         }, 0);
     }
 
@@ -224,9 +249,18 @@ export class AeroLiveDomComposer {
         });
 
         this.form.append(this.maskLabel, this.input, this.sendButton);
+        for (const eventName of ['mousedown', 'mouseup', 'click']) {
+            this.form.addEventListener(eventName, (event) => {
+                event.stopPropagation();
+            });
+        }
         this.form.addEventListener('submit', (event) => {
             event.preventDefault();
-            if (this.compositionActive || this.compositionSubmitSuppressed) {
+            event.stopPropagation();
+            if (this.compositionActive
+                || this.compositionSubmitSuppressed
+                || this.compositionEnterSubmitPending) {
+                this.#queueCompositionEnterSubmit();
                 return;
             }
             this.onSubmit(this.getValue());
@@ -237,17 +271,22 @@ export class AeroLiveDomComposer {
         this.input.addEventListener('compositionend', () => {
             this.compositionActive = false;
             this.#suppressCompositionSubmit();
+            if (this.compositionEnterSubmitPending) {
+                this.#queueCompositionEnterSubmit();
+            }
         });
         this.input.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
                 if (event.isComposing
                     || this.compositionActive
-                    || event.keyCode === 229
-                    || this.compositionSubmitSuppressed) {
+                    || event.keyCode === 229) {
                     this.#suppressCompositionSubmit();
+                    this.#queueCompositionEnterSubmit();
                     event.stopPropagation();
                     return;
                 }
+                this.compositionEnterSubmitPending = false;
+                this.compositionEnterSubmitGeneration += 1;
                 this.compositionSubmitSuppressed = false;
                 event.preventDefault();
                 event.stopPropagation();

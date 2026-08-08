@@ -195,8 +195,14 @@ export class AeroLiveNicknameComposer {
         });
 
         this.form.append(this.input, this.submitButton);
+        for (const eventName of ['mousedown', 'mouseup', 'click']) {
+            this.form.addEventListener(eventName, (event) => {
+                event.stopPropagation();
+            });
+        }
         this.form.addEventListener('submit', (event) => {
             event.preventDefault();
+            event.stopPropagation();
             if (this.compositionActive || this.compositionSubmitSuppressed) {
                 return;
             }

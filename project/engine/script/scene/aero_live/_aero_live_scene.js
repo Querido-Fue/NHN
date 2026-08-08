@@ -43,8 +43,20 @@ const AMBIENT_CHAT_START_DELAY_SECONDS = 0.6;
 const AMBIENT_CHAT_INTERVAL_SECONDS = 1.25;
 const AMBIENT_EVENT_TRANSITION_IDLE_SECONDS = 0.6;
 const AMBIENT_RECENT_AUTHOR_WINDOW = 9;
-const AMBIENT_INITIAL_AHA_BURST_COUNT = 8;
-const AMBIENT_INITIAL_AHA_TEXT = '아하';
+const AMBIENT_INITIAL_AHA_TEXTS = Object.freeze([
+    '아하',
+    '아하',
+    'ㅇㅎ',
+    '아-하 (아쿠아 하이라는 뜻)',
+    '아~하',
+    'ㅇㅎㅎㅇㅎ',
+    '아하',
+    '아하',
+    'ㅇㅎ',
+    '아-하 (아쿠아 하이라는 뜻)',
+    '아~하',
+    'ㅇㅎㅎㅇㅎ'
+]);
 const AMBIENT_BRIDGE_TEXTS = Object.freeze([
     '뭣',
     '헉',
@@ -129,6 +141,42 @@ function copyRect(rect) {
         y: finiteNumber(rect?.y, 0),
         w: Math.max(0, finiteNumber(rect?.w, 0)),
         h: Math.max(0, finiteNumber(rect?.h, 0))
+    };
+}
+
+/**
+ * 우상단에 배치할 macOS형 창 컨트롤 좌표를 만듭니다.
+ * @param {{x:number,y:number,w:number,h:number}} frame - 배경 에셋의 창 프레임입니다.
+ * @param {number} contentTop - 제목 표시줄 바로 아래 콘텐츠의 y 좌표입니다.
+ * @param {number} viewportHeight - 현재 논리 화면 높이입니다.
+ * @returns {{buttons:Array<object>}} 빨강·노랑·초록 세 버튼입니다.
+ */
+function createMacWindowControls(frame, contentTop, viewportHeight) {
+    const titleHeight = Math.max(1, finiteNumber(contentTop, frame.y) - frame.y);
+    const radius = Math.max(
+        5,
+        Math.min(viewportHeight * 0.021, titleHeight * 0.32)
+    );
+    const gap = radius * 0.45;
+    const step = radius * 2 + gap;
+    const rightInset = Math.max(radius * 0.8, frame.w * 0.009);
+    const greenX = frame.x + frame.w - rightInset - radius;
+    const centerY = frame.y + titleHeight * 0.53;
+    const controls = [
+        { id: 'close', color: 'red', x: greenX - step * 2, y: centerY, radius },
+        { id: 'minimize', color: 'yellow', x: greenX - step, y: centerY, radius },
+        { id: 'maximize', color: 'green', x: greenX, y: centerY, radius }
+    ].map((control) => ({
+        ...control,
+        hitRect: {
+            x: control.x - radius,
+            y: control.y - radius,
+            w: radius * 2,
+            h: radius * 2
+        }
+    }));
+    return {
+        buttons: controls
     };
 }
 
@@ -295,7 +343,7 @@ export class AeroLiveScene extends BaseScene {
     }
 
     /**
-     * 히로인 이미지가 준비되거나 로드 실패가 확정될 때까지 전환 준비를 기다립니다.
+     * 라이브 배경과 히로인 이미지의 로드 성공 또는 실패가 확정될 때까지 기다립니다.
      * @returns {Promise<void>} 이미지 준비 대기 Promise입니다.
      * @override
      */
@@ -397,96 +445,160 @@ export class AeroLiveScene extends BaseScene {
         const gap = ux(UI.PANEL_GAP_UIWW);
         const contentX = this.UIOffsetX + safe;
         const contentW = Math.max(1, this.UIWW - (safe * 2));
-        const topH = vy(UI.TOP_BAR_HEIGHT_WH);
-        const bodyY = safe + topH + gap;
-        const bodyH = Math.max(1, this.WH - bodyY - safe);
-        const columnsW = Math.max(1, contentW - (gap * 2));
-        const ratioSum = UI.LEFT_COLUMN_RATIO + UI.CENTER_COLUMN_RATIO + UI.RIGHT_COLUMN_RATIO;
-        const leftW = columnsW * (UI.LEFT_COLUMN_RATIO / ratioSum);
-        const centerW = columnsW * (UI.CENTER_COLUMN_RATIO / ratioSum);
-        const rightW = Math.max(1, columnsW - leftW - centerW);
-        const leftX = contentX;
-        const centerX = leftX + leftW + gap;
-        const rightX = centerX + centerW + gap;
         const panelPad = ux(UI.PANEL_PADDING_UIWW);
-        const composerH = vy(UI.DOM_INPUT_HEIGHT_WH);
-        const coreActionH = vy(UI.CORE_ACTION_HEIGHT_WH);
-        const donationActionH = vy(UI.DONATION_ACTION_HEIGHT_WH);
+        const liveLayout = AERO_CONSTANTS.ASSET.LIVE_BACKGROUND_LAYOUT || {};
+        const referenceWidth = Math.max(1, finiteNumber(liveLayout.REFERENCE_WIDTH, 3840));
+        const referenceHeight = Math.max(1, finiteNumber(liveLayout.REFERENCE_HEIGHT, 2160));
+        const mapLiveRect = (rect = {}) => ({
+            x: this.UIOffsetX + this.UIWW * finiteNumber(rect.x, 0) / referenceWidth,
+            y: this.WH * finiteNumber(rect.y, 0) / referenceHeight,
+            w: Math.max(1, this.UIWW * finiteNumber(rect.w, referenceWidth) / referenceWidth),
+            h: Math.max(1, this.WH * finiteNumber(rect.h, referenceHeight) / referenceHeight)
+        });
+        const mainFrame = mapLiveRect(liveLayout.MAIN_FRAME);
+        const mainContent = mapLiveRect(liveLayout.MAIN_CONTENT);
+        const mainStatus = mapLiveRect(liveLayout.MAIN_STATUS);
+        const chatFrame = mapLiveRect(liveLayout.CHAT_FRAME);
+        const chatContent = mapLiveRect(liveLayout.CHAT_CONTENT);
+        const producerFrame = mapLiveRect(liveLayout.PRODUCER_FRAME);
+        const producerContent = mapLiveRect(liveLayout.PRODUCER_CONTENT);
+        const titleInset = Math.max(3, panelPad * 0.38);
+        const mainWindowControls = createMacWindowControls(mainFrame, mainStatus.y, this.WH);
+        const chatWindowControls = createMacWindowControls(chatFrame, chatContent.y, this.WH);
+        const producerWindowControls = createMacWindowControls(producerFrame, producerContent.y, this.WH);
 
         this.layout = {
             safe,
             gap,
             panelPad,
-            topBar: { x: contentX, y: safe, w: contentW, h: topH },
-            left: { x: leftX, y: bodyY, w: leftW, h: bodyH },
-            center: { x: centerX, y: bodyY, w: centerW, h: bodyH },
-            right: { x: rightX, y: bodyY, w: rightW, h: bodyH }
+            backdrop: { x: this.UIOffsetX, y: 0, w: this.UIWW, h: this.WH },
+            mainFrame,
+            chatFrame,
+            producerFrame,
+            mainWindowControls,
+            chatWindowControls,
+            producerWindowControls,
+            mainStatus,
+            chatTitleBar: {
+                x: chatFrame.x + titleInset,
+                y: chatFrame.y,
+                w: Math.max(1, chatFrame.w - titleInset * 2),
+                h: Math.max(1, chatContent.y - chatFrame.y)
+            },
+            producerTitleBar: {
+                x: producerFrame.x + titleInset,
+                y: producerFrame.y,
+                w: Math.max(1, producerFrame.w - titleInset * 2),
+                h: Math.max(1, producerContent.y - producerFrame.y)
+            },
+            topBar: {
+                x: mainStatus.x + panelPad,
+                y: mainStatus.y + titleInset,
+                w: Math.max(1, mainStatus.w - panelPad * 2),
+                h: Math.max(1, mainStatus.h - titleInset * 2)
+            },
+            left: producerContent,
+            center: mainContent,
+            right: chatContent
         };
 
-        const endButtonW = Math.max(84, ux(7.8));
-        this.layout.endButton = {
-            x: contentX + contentW - endButtonW - panelPad * 0.45,
-            y: safe + (topH * 0.2),
-            w: endButtonW,
-            h: topH * 0.6
-        };
+        this.layout.endButton = copyRect(mainWindowControls.buttons[0]?.hitRect);
 
-        const leftInnerX = leftX + panelPad;
-        const leftInnerW = Math.max(1, leftW - (panelPad * 2));
-        const donationCardH = Math.max(vy(14), 92);
-        this.layout.donationCard = {
-            x: leftInnerX,
-            y: bodyY + panelPad * 2.2,
-            w: leftInnerW,
-            h: donationCardH
-        };
-        const donationButtonsTotalH = (donationActionH * AERO_CONSTANTS.INSTRUCTIONS.length)
-            + (gap * 0.48 * Math.max(0, AERO_CONSTANTS.INSTRUCTIONS.length - 1));
-        const donationButtonsY = bodyY + bodyH - panelPad - donationButtonsTotalH;
-        this.layout.donationActionRects = AERO_CONSTANTS.INSTRUCTIONS.map((instruction, index) => ({
-            id: instruction.id,
-            x: leftInnerX,
-            y: donationButtonsY + (index * (donationActionH + gap * 0.48)),
-            w: leftInnerW,
-            h: donationActionH
+        const producerPad = Math.max(4, panelPad * 0.75);
+        const producerGap = Math.max(4, gap * 0.62);
+        const producerInnerX = producerContent.x + producerPad;
+        const producerInnerW = Math.max(1, producerContent.w - producerPad * 2);
+        const metricGap = Math.max(3, producerGap * 0.7);
+        const metricH = Math.min(
+            Math.max(vy(5.8), 34),
+            Math.max(1, producerContent.h * 0.28)
+        );
+        const metricW = Math.max(1, (producerInnerW - metricGap * 3) / 4);
+        this.layout.metricRects = Array.from({ length: 4 }, (_, index) => ({
+            x: producerInnerX + index * (metricW + metricGap),
+            y: producerContent.y + producerPad,
+            w: metricW,
+            h: metricH
         }));
         this.layout.metricArea = {
-            x: leftInnerX,
-            y: this.layout.donationCard.y + donationCardH + gap,
-            w: leftInnerW,
-            h: Math.max(0, donationButtonsY - gap - (this.layout.donationCard.y + donationCardH + gap))
+            x: producerInnerX,
+            y: producerContent.y + producerPad,
+            w: producerInnerW,
+            h: metricH
         };
 
+        const producerActionsY = this.layout.metricArea.y + metricH + producerGap;
+        const producerActionsH = Math.max(
+            1,
+            producerContent.y + producerContent.h - producerPad - producerActionsY
+        );
+        const donationCardW = Math.max(1, producerInnerW * 0.44);
+        this.layout.donationCard = {
+            x: producerInnerX,
+            y: producerActionsY,
+            w: donationCardW,
+            h: producerActionsH
+        };
+        const donationGridX = producerInnerX + donationCardW + producerGap;
+        const donationGridW = Math.max(1, producerInnerX + producerInnerW - donationGridX);
+        const donationColumns = 3;
+        const donationRows = 2;
+        const donationButtonGap = Math.max(3, producerGap * 0.72);
+        const donationActionW = Math.max(
+            1,
+            (donationGridW - donationButtonGap * (donationColumns - 1)) / donationColumns
+        );
+        const donationActionH = Math.max(
+            1,
+            (producerActionsH - donationButtonGap * (donationRows - 1)) / donationRows
+        );
+        this.layout.donationActionRects = AERO_CONSTANTS.INSTRUCTIONS.map((instruction, index) => ({
+            id: instruction.id,
+            x: donationGridX + (index % donationColumns) * (donationActionW + donationButtonGap),
+            y: producerActionsY + Math.floor(index / donationColumns) * (donationActionH + donationButtonGap),
+            w: donationActionW,
+            h: donationActionH
+        }));
+
+        const heroPad = panelPad;
         const centerInner = {
-            x: centerX + panelPad,
-            y: bodyY + panelPad,
-            w: Math.max(1, centerW - panelPad * 2),
-            h: Math.max(1, bodyH - panelPad * 2)
+            x: mainContent.x + heroPad,
+            y: mainContent.y + heroPad,
+            w: Math.max(1, mainContent.w - heroPad * 2),
+            h: Math.max(1, mainContent.h - heroPad * 2)
         };
         const dialogueH = vy(UI.HERO_DIALOGUE_HEIGHT_WH);
-        this.layout.heroStage = {
-            x: centerInner.x,
-            y: centerInner.y,
-            w: centerInner.w,
-            h: Math.max(1, centerInner.h - dialogueH - gap)
-        };
         this.layout.heroDialogue = {
             x: centerInner.x,
             y: centerInner.y + centerInner.h - dialogueH,
             w: centerInner.w,
             h: dialogueH
         };
+        const stageY = Math.max(
+            centerInner.y,
+            mainStatus.y + mainStatus.h + gap * 1.9
+        );
+        this.layout.heroStage = {
+            x: centerInner.x,
+            y: stageY,
+            w: centerInner.w,
+            h: Math.max(1, this.layout.heroDialogue.y - gap - stageY)
+        };
 
-        const rightInnerX = rightX + panelPad;
-        const rightInnerW = Math.max(1, rightW - panelPad * 2);
+        const chatPad = Math.max(5, panelPad * 0.75);
+        const chatGap = Math.max(4, gap * 0.7);
+        const rightInnerX = chatContent.x + chatPad;
+        const rightInnerW = Math.max(1, chatContent.w - chatPad * 2);
+        const composerH = Math.max(vy(UI.DOM_INPUT_HEIGHT_WH), 34);
+        const coreActionH = Math.max(vy(UI.CORE_ACTION_HEIGHT_WH), 30);
         this.layout.composer = {
             x: rightInnerX,
-            y: bodyY + bodyH - panelPad - composerH,
+            y: chatContent.y + chatContent.h - chatPad - composerH,
             w: rightInnerW,
             h: composerH
         };
-        const coreActionsY = this.layout.composer.y - gap - coreActionH;
-        const coreButtonGap = gap * 0.45;
+        const coreActionsY = this.layout.composer.y - chatGap - coreActionH;
+        const coreButtonGap = Math.max(3, chatGap * 0.72);
         const coreButtonCount = Math.max(1, CORE_ACTIONS.length);
         const coreButtonW = (rightInnerW - coreButtonGap * Math.max(0, coreButtonCount - 1)) / coreButtonCount;
         this.layout.coreActionRects = CORE_ACTIONS.map((action, index) => ({
@@ -496,11 +608,12 @@ export class AeroLiveScene extends BaseScene {
             w: coreButtonW,
             h: coreActionH
         }));
+        const chatHeaderH = Math.max(vy(4.5), 28);
         this.layout.chatArea = {
             x: rightInnerX,
-            y: bodyY + panelPad + vy(4.6),
+            y: chatContent.y + chatPad + chatHeaderH,
             w: rightInnerW,
-            h: Math.max(1, coreActionsY - gap - (bodyY + panelPad + vy(4.6)))
+            h: Math.max(1, coreActionsY - chatGap - (chatContent.y + chatPad + chatHeaderH))
         };
 
         this.#buildTopicLayout();
@@ -871,7 +984,6 @@ export class AeroLiveScene extends BaseScene {
             this.#startBroadcast(topicId);
             return;
         }
-        this.#showToast(`${this.playerName}님, 방송 주제를 선택해 주세요.`);
     }
 
     /**
@@ -952,7 +1064,6 @@ export class AeroLiveScene extends BaseScene {
             this.#clearAmbientChatQueue();
             this.#consumeRuntimeEvents();
             this.#syncSnapshotState();
-            this.#showToast(`${safeText(this.snapshot?.topic?.title, 40)} 방송을 시작합니다.`);
         } catch (error) {
             if (campaignPrepared) {
                 this.campaign.cancelPreparedBroadcast();
@@ -996,13 +1107,18 @@ export class AeroLiveScene extends BaseScene {
         this.intentContextRevision += 1;
         this.aiService?.abortAll?.();
         this.inputClassificationPending = false;
+        this.earlyEndModalOpen = false;
         this.selectedCoreChatId = null;
+        this.toastText = '';
+        this.toastSecondsRemaining = 0;
         this.heroResponseText = '';
         this.heroResponseSecondsRemaining = 0;
         this.heroResponseLabel = '';
         this.heroResponseExpression = 'idle';
         this.echoMemories = [];
         this.pendingEchoCallback = null;
+        this.timerMaximums = createTimerMaximums(this.runtimeOptions);
+        this.keyLatch.clear();
         this.#clearAmbientChatQueue();
         const nextRuntimeOptions = initialMetrics
             ? {
@@ -1082,10 +1198,7 @@ export class AeroLiveScene extends BaseScene {
         this.#refreshRuntimeState();
         if (!response?.accepted) {
             this.#showToast(response?.reason || '지금은 해당 채팅을 처리할 수 없습니다.');
-            return;
         }
-        const label = CORE_ACTIONS.find((item) => item.id === action)?.label || '처리';
-        this.#showToast(`핵심 채팅을 ${label}했습니다.`);
     }
 
     /**
@@ -1101,11 +1214,7 @@ export class AeroLiveScene extends BaseScene {
         this.#refreshRuntimeState();
         if (!response?.accepted) {
             this.#showToast(response?.reason || '지금은 후원 지시를 내릴 수 없습니다.');
-            return;
         }
-        const label = AERO_CONSTANTS.INSTRUCTIONS.find((item) => item.id === instructionId)?.shortLabel
-            || instructionId;
-        this.#showToast(`후원 대응: ${label}`);
     }
 
     /**
@@ -1236,9 +1345,8 @@ export class AeroLiveScene extends BaseScene {
 
             if (response?.accepted) {
                 this.composer?.clear?.();
-                this.#showToast(classification.reason || '채팅이 방송 여론에 반영되었습니다.');
             } else {
-                this.#showToast(classification.reason || response?.reason || '이 채팅은 전송할 수 없습니다.');
+                this.#showToast('이 채팅은 전송할 수 없습니다.');
             }
         } catch (error) {
             console.warn('[AeroLiveScene] 자유 채팅 판정 실패', error);
@@ -1443,7 +1551,7 @@ export class AeroLiveScene extends BaseScene {
     }
 
     /**
-     * 방송 첫 비트에만 모델 입력과 무관한 `아하` 채팅을 큐 선두에 충분히 채웁니다.
+     * 방송 첫 비트에만 모델 입력과 무관한 `아하` 변형 채팅을 큐 선두에 채웁니다.
      * 모델 슬롯, 최근 화면 작성자와 강퇴 작성자를 피해 서로 다른 제품 시청자 ID를 고릅니다.
      * @param {object} event - beat-started 런타임 이벤트입니다.
      * @param {Set<string>} reservedViewerIds - 모델 배치에 예약한 시청자 ID입니다.
@@ -1479,7 +1587,7 @@ export class AeroLiveScene extends BaseScene {
                     ).includes(AERO_LIVE_PLAYER_NAME_TOKEN)));
         const chats = [];
         for (const viewerId of viewerPool) {
-            if (chats.length >= AMBIENT_INITIAL_AHA_BURST_COUNT) {
+            if (chats.length >= AMBIENT_INITIAL_AHA_TEXTS.length) {
                 break;
             }
             if (excludedAuthors.has(viewerId)) {
@@ -1489,7 +1597,7 @@ export class AeroLiveScene extends BaseScene {
             chats.push({
                 viewer_id: viewerId,
                 sentiment: 'neutral',
-                text: AMBIENT_INITIAL_AHA_TEXT,
+                text: AMBIENT_INITIAL_AHA_TEXTS[chats.length],
                 source: 'opening-aha'
             });
         }
@@ -1679,18 +1787,12 @@ export class AeroLiveScene extends BaseScene {
                 ? 'embarrassed'
                 : (event.appropriate ? 'happy' : 'sad');
             this.#shortenAmbientTransitionIdle();
-            this.#showToast(event.timedOut
-                ? '후원 응답 시간이 지나 자동으로 대응했습니다.'
-                : (event.appropriate ? '후원 의도에 맞는 디렉션이었습니다.' : '후원 의도와 어긋난 디렉션이었습니다.'));
             return;
         }
         if (event.type === 'core-chat-resolved') {
             this.intentContextRevision += 1;
             this.selectedCoreChatId = null;
             this.#shortenAmbientTransitionIdle();
-            if (event.action === 'timeout') {
-                this.#showToast('핵심 채팅 대응 시간이 지났습니다.');
-            }
             return;
         }
         if (event.type === 'core-chat-cancelled') {
@@ -1708,6 +1810,9 @@ export class AeroLiveScene extends BaseScene {
         }
         if (event.type === 'broadcast-ended') {
             this.campaign?.completeBroadcast?.(event.summary);
+            this.campaign?.reset?.({
+                initialMetrics: this.runtimeOptions.initialMetrics
+            });
             this.inputClassificationPending = false;
             this.earlyEndModalOpen = false;
             this.selectedCoreChatId = null;
@@ -1716,6 +1821,8 @@ export class AeroLiveScene extends BaseScene {
             this.aiService?.abortAll?.();
             this.snapshot = this.runtime.getSnapshot();
             this.mode = MODE_RESULTS;
+            this.toastText = '';
+            this.toastSecondsRemaining = 0;
             this.#syncButtonStates();
             this.#syncComposerDom();
         }

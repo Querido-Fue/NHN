@@ -5,6 +5,7 @@ const CAPTURE_WIDTH = 1280;
 const CAPTURE_HEIGHT = 720;
 const WAIT_TIMEOUT_MS = 15000;
 const MAX_CORE_FAST_FORWARD_TICKS = 60 * 210;
+const MAX_OPENING_CHAT_TICKS = 60 * 20;
 const TEST_PLAYER_NAME = '별빛단장';
 const TEST_PLAYER_MESSAGE = `${TEST_PLAYER_NAME} 최고야`;
 const MODEL_PLAYER_MESSAGE = '{playerName} 최고야';
@@ -361,7 +362,7 @@ function createCanvasTextCapture() {
 }
 
 /** DOM form의 실제 input과 submit button을 사용해 값을 제출합니다. */
-function submitDomForm(selector, value) {
+function submitDomForm(selector, value, options = {}) {
     const form = document.querySelector(selector);
     const input = form?.querySelector('input[type="text"]');
     const submitButton = form?.querySelector('button[type="submit"]');
@@ -370,6 +371,27 @@ function submitDomForm(selector, value) {
     }
     input.value = value;
     input.dispatchEvent(new Event('input', { bubbles: true }));
+    if (options.keyboardEnter === true) {
+        input.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter',
+            keyCode: 13,
+            bubbles: true,
+            cancelable: true
+        }));
+        return;
+    }
+    if (options.mouseSequence === true) {
+        const rect = submitButton.getBoundingClientRect();
+        const mouseInit = {
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            clientX: rect.left + rect.width / 2,
+            clientY: rect.top + rect.height / 2
+        };
+        submitButton.dispatchEvent(new MouseEvent('mousedown', mouseInit));
+        submitButton.dispatchEvent(new MouseEvent('mouseup', mouseInit));
+    }
     submitButton.click();
 }
 
@@ -498,6 +520,7 @@ async function captureState(state) {
         fileName,
         mode: state.scene.mode,
         status: state.scene.snapshot?.status || 'unknown',
+        liveBackdrop: state.scene.renderer?.getLiveBackdropAssetStatus?.() || null,
         window: { width: window.innerWidth, height: window.innerHeight },
         composer: inspectComposer(state.scene),
         nicknameComposer: inspectNicknameComposer(state.scene),
@@ -526,12 +549,14 @@ async function runSmoke() {
         fs.writeFileSync(path.join(paths.outputDirectory, 'stage.txt'), 'scene-ready\n', 'utf8');
         await waitFor(
             () => {
-                const status = scene.renderer?.getHeroAssetStatus?.();
-                return status?.ready || status?.failed;
+                const heroStatus = scene.renderer?.getHeroAssetStatus?.();
+                const backdropStatus = scene.renderer?.getLiveBackdropAssetStatus?.();
+                return (heroStatus?.ready || heroStatus?.failed)
+                    && (backdropStatus?.ready || backdropStatus?.failed);
             },
-            'hero-images'
+            'aero-live-images'
         );
-        fs.writeFileSync(path.join(paths.outputDirectory, 'stage.txt'), 'hero-ready\n', 'utf8');
+        fs.writeFileSync(path.join(paths.outputDirectory, 'stage.txt'), 'assets-ready\n', 'utf8');
         await prepareCaptureWindow(nativeWindow, game);
         fs.writeFileSync(path.join(paths.outputDirectory, 'stage.txt'), 'capture-window-ready\n', 'utf8');
 
@@ -568,7 +593,8 @@ async function runSmoke() {
             game, scene, nativeWindow, paths, textCapture, order: '01', name: 'nickname'
         }));
 
-        submitDomForm('.aero-live-nickname-composer', TEST_PLAYER_NAME);
+        submitDomForm('.aero-live-nickname-composer', TEST_PLAYER_NAME, { mouseSequence: true });
+        await new Promise((resolve) => window.setTimeout(resolve, 160));
         await waitFor(
             () => scene.mode === 'topicSelect' && scene.playerName === TEST_PLAYER_NAME,
             'nickname-submit'
@@ -590,7 +616,25 @@ async function runSmoke() {
         await Promise.resolve();
         scene.update();
 
-        submitDomForm('.aero-live-composer', TEST_PLAYER_MESSAGE);
+        let openingChatTicks = 0;
+        while (openingChatTicks < MAX_OPENING_CHAT_TICKS
+            && scene.snapshot?.chats?.filter((chat) => chat.source === 'opening-aha').length < 12) {
+            scene.fixedUpdate();
+            openingChatTicks += 1;
+        }
+        scene.update();
+        const openingAhaChats = scene.snapshot?.chats
+            ?.filter((chat) => chat.source === 'opening-aha') || [];
+        if (openingAhaChats.length !== 12) {
+            throw new Error('NW_SMOKE_OPENING_AHA_NOT_READY');
+        }
+        const openingCapture = await captureState({
+            game, scene, nativeWindow, paths, textCapture, order: '03', name: 'opening-chats'
+        });
+        captures.push(openingCapture);
+        const openingRenderedTexts = openingCapture.renderedTexts || [];
+
+        submitDomForm('.aero-live-composer', TEST_PLAYER_MESSAGE, { keyboardEnter: true });
         await waitFor(
             () => scene.inputClassificationPending === false
                 && Array.isArray(scene.echoMemories)
@@ -658,13 +702,13 @@ async function runSmoke() {
             heroExpression: echoMemory?.expression || ''
         };
         captures.push(await captureState({
-            game, scene, nativeWindow, paths, textCapture, order: '03', name: 'live'
+            game, scene, nativeWindow, paths, textCapture, order: '04', name: 'live'
         }));
 
         scene.endButton?.onClick?.();
         await waitFor(() => scene.earlyEndModalOpen === true, 'early-end-modal-open');
         captures.push(await captureState({
-            game, scene, nativeWindow, paths, textCapture, order: '04', name: 'early-end-modal'
+            game, scene, nativeWindow, paths, textCapture, order: '05', name: 'early-end-modal'
         }));
 
         scene.modalConfirmButton?.onClick?.();
@@ -673,7 +717,7 @@ async function runSmoke() {
             'early-end-confirm'
         );
         captures.push(await captureState({
-            game, scene, nativeWindow, paths, textCapture, order: '05', name: 'results'
+            game, scene, nativeWindow, paths, textCapture, order: '06', name: 'results'
         }));
 
         const allAiContexts = [...chatRequestContexts, ...intentRequestContexts];
@@ -743,6 +787,7 @@ async function runSmoke() {
                 displayScaleFactor: getDisplayScaleFactor()
             },
             heroAssets: scene.renderer?.getHeroAssetStatus?.() || null,
+            liveBackdrop: scene.renderer?.getLiveBackdropAssetStatus?.() || null,
             identity: {
                 submittedThroughDom: true,
                 playerName: TEST_PLAYER_NAME,
@@ -750,6 +795,17 @@ async function runSmoke() {
             },
             privacy,
             echo,
+            openingChats: {
+                fixedTicks: openingChatTicks,
+                texts: openingAhaChats.map((chat) => chat.text),
+                uniqueAuthors: new Set(openingAhaChats.map((chat) => chat.author || chat.viewer_id)).size,
+                compatibilityJamoRendered: ['ㅇㅎ', 'ㅇㅎㅎㅇㅎ'].every(
+                    (expected) => openingRenderedTexts.includes(expected)
+                ),
+                conjoiningJamoAbsentFromRenderedText: openingRenderedTexts.every(
+                    (value) => !/[\u1100-\u1112\u1161-\u1175]/u.test(value)
+                )
+            },
             liveState: {
                 fallbackChatCount: liveFallbackChatCount,
                 ...liveInteraction,
@@ -770,6 +826,10 @@ async function runSmoke() {
             && report.heroAssets?.requestedCount > 0
             && report.heroAssets?.readyCount === report.heroAssets?.requestedCount
             && report.heroAssets?.failedCount === 0
+            && report.liveBackdrop?.ready === true
+            && report.liveBackdrop?.failed === false
+            && report.liveBackdrop?.naturalWidth === 1920
+            && report.liveBackdrop?.naturalHeight === 1080
             && isValidCaptureViewport(report.viewport.width, report.viewport.height)
             && report.identity.scenePlayerNameMatches
             && report.privacy.chatRequestCount > 0
@@ -788,6 +848,12 @@ async function runSmoke() {
             && report.echo.resultPlayerMemoryRendered
             && report.echo.resultHeroMemoryRendered
             && report.echo.unresolvedTokenAbsentFromRenderedTexts
+            && report.openingChats.fixedTicks > 0
+            && report.openingChats.fixedTicks < MAX_OPENING_CHAT_TICKS
+            && report.openingChats.texts.length === 12
+            && report.openingChats.uniqueAuthors === 12
+            && report.openingChats.compatibilityJamoRendered
+            && report.openingChats.conjoiningJamoAbsentFromRenderedText
             && report.liveState.fallbackChatCount > 0
             && report.liveState.fixedTicks > 0
             && report.liveState.fixedTicks < MAX_CORE_FAST_FORWARD_TICKS
@@ -809,10 +875,14 @@ async function runSmoke() {
             && report.captures[2].composer.withinViewport
             && report.captures[2].composer.alignedToCanvas
             && report.captures[2].nicknameComposer.display === 'none'
-            && report.captures[3].composer.display === 'none'
+            && report.captures[3].composer.display !== 'none'
+            && report.captures[3].composer.withinViewport
+            && report.captures[3].composer.alignedToCanvas
             && report.captures[3].nicknameComposer.display === 'none'
             && report.captures[4].composer.display === 'none'
             && report.captures[4].nicknameComposer.display === 'none'
+            && report.captures[5].composer.display === 'none'
+            && report.captures[5].nicknameComposer.display === 'none'
             && canvasStates.length >= 7
             && canvasStates.every((canvas) => canvas.width > 0 && canvas.height > 0)
             && errors.length === 0

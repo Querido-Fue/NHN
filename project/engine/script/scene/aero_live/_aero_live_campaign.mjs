@@ -46,12 +46,22 @@ export class AeroLiveCampaign {
      * @param {{initialMetrics?:object,day?:number,lastTopicId?:string|null}} [options={}] - 캠페인 시작값입니다.
      */
     constructor(options = {}) {
+        this.reset(options);
+    }
+
+    /**
+     * 캠페인의 회차·주제·지표·위기 누적을 지정한 초기값으로 되돌립니다.
+     * @param {{initialMetrics?:object,day?:number,lastTopicId?:string|null}} [options={}] - 새 시작값입니다.
+     * @returns {object} 초기화된 캠페인 스냅샷입니다.
+     */
+    reset(options = {}) {
         this.day = Math.max(1, Math.round(Number(options.day) || 1));
         this.completedBroadcasts = 0;
         this.lastTopicId = typeof options.lastTopicId === 'string' ? options.lastTopicId : null;
         this.metrics = normalizeMetrics({ ...DEFAULT_METRICS, ...(options.initialMetrics || {}) });
         this.activeBroadcast = null;
         this.stressCrises = 0;
+        return this.getSnapshot();
     }
 
     /**

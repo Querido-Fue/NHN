@@ -4,14 +4,30 @@ import { OverlaySession } from 'overlay/_overlay_session.js';
 import { getSetting } from 'save/save_system.js';
 import { createFontString, truncateTextToWidth, wrapTextByCharacters } from 'util/font_util.js';
 import { buildVisibleChatRows } from './_aero_live_chat_layout.mjs';
+import {
+    getAeroLiveHeroAnimationFrame,
+    resolveAeroLiveHeroPose
+} from './_aero_live_hero_animation.mjs';
 import { resolveAeroLivePlayerNameTemplate } from './_aero_live_player_identity.mjs';
 
 const AERO_CONSTANTS = getData('AERO_LIVE_SCENE_CONSTANTS');
 const UI = AERO_CONSTANTS.UI;
 const COLORS = AERO_CONSTANTS.COLORS;
-const HERO_EXPRESSION_PATHS = AERO_CONSTANTS.ASSET.HERO_EXPRESSION_PATHS || {};
-const HERO_FALLBACK_EXPRESSION = AERO_CONSTANTS.ASSET.HERO_FALLBACK_EXPRESSION || 'default';
+const LIVE_BACKGROUND_PATH = AERO_CONSTANTS.ASSET.LIVE_BACKGROUND_PATH || '';
+const HERO_POSE_PATHS = AERO_CONSTANTS.ASSET.HERO_POSE_PATHS || {};
+const HERO_EXPRESSION_POSES = AERO_CONSTANTS.ASSET.HERO_EXPRESSION_POSES || {};
+const HERO_FALLBACK_POSE = AERO_CONSTANTS.ASSET.HERO_FALLBACK_POSE || 'neutral';
 const FONT_FAMILY = 'Pretendard Variable, arial';
+const CONJOINING_JAMO_PATTERN = /[\u1100-\u1112\u1161-\u1175]/gu;
+const COMPATIBILITY_JAMO_BY_CONJOINING = Object.freeze({
+    'ᄀ': 'ㄱ', 'ᄁ': 'ㄲ', 'ᄂ': 'ㄴ', 'ᄃ': 'ㄷ', 'ᄄ': 'ㄸ', 'ᄅ': 'ㄹ',
+    'ᄆ': 'ㅁ', 'ᄇ': 'ㅂ', 'ᄈ': 'ㅃ', 'ᄉ': 'ㅅ', 'ᄊ': 'ㅆ', 'ᄋ': 'ㅇ',
+    'ᄌ': 'ㅈ', 'ᄍ': 'ㅉ', 'ᄎ': 'ㅊ', 'ᄏ': 'ㅋ', 'ᄐ': 'ㅌ', 'ᄑ': 'ㅍ', 'ᄒ': 'ㅎ',
+    'ᅡ': 'ㅏ', 'ᅢ': 'ㅐ', 'ᅣ': 'ㅑ', 'ᅤ': 'ㅒ', 'ᅥ': 'ㅓ', 'ᅦ': 'ㅔ',
+    'ᅧ': 'ㅕ', 'ᅨ': 'ㅖ', 'ᅩ': 'ㅗ', 'ᅪ': 'ㅘ', 'ᅫ': 'ㅙ', 'ᅬ': 'ㅚ',
+    'ᅭ': 'ㅛ', 'ᅮ': 'ㅜ', 'ᅯ': 'ㅝ', 'ᅰ': 'ㅞ', 'ᅱ': 'ㅟ', 'ᅲ': 'ㅠ',
+    'ᅳ': 'ㅡ', 'ᅴ': 'ㅢ', 'ᅵ': 'ㅣ'
+});
 const TOPIC_ACCENTS = Object.freeze(['#42E0D0', '#62D65B', '#FFD65A', '#FF8AA1', '#7B9CFF']);
 const CORE_COLORS = Object.freeze({
     kick: COLORS.NEGATIVE,
@@ -26,21 +42,6 @@ const GLASS_STYLE = Object.freeze({
     SHADOW_RADIUS: 18,
     SHADOW_OFFSET_Y: 7
 });
-const EXPRESSION_LABELS = Object.freeze({
-    default: '기본', idle: '기본', neutral: '평온',
-    smile: '미소', laugh: '웃음', happy: '기쁨',
-    angry: '화남', firm: '단호', anxious: '불안',
-    embarrassed: '당황', flustered: '당황', sad: '슬픔',
-    tired: '피곤', shocked: '놀람', surprised: '놀람'
-});
-const MOOD_LABELS = Object.freeze({
-    analytical: '분석적', bright: '명랑', calm: '차분', careful: '신중',
-    excited: '들뜸', flustered: '당황', focused: '집중', hesitant: '망설임',
-    moved: '감동', playful: '장난기', relieved: '안도', resolved: '결연',
-    satisfied: '만족', tense: '긴장', thoughtful: '사색',
-    'tired-warm': '포근한 피로', warm: '따뜻함'
-});
-
 /**
  * 숫자를 지정한 범위로 제한합니다.
  * @param {*} value - 원본 값입니다.
@@ -73,6 +74,7 @@ function number(value, fallback = 0) {
 function text(value, maxChars = 240) {
     return Array.from(String(value ?? '')
         .normalize('NFKC')
+        .replace(CONJOINING_JAMO_PATTERN, (jamo) => COMPATIBILITY_JAMO_BY_CONJOINING[jamo] || jamo)
         .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/gu, ' ')
         .replace(/\s+/gu, ' ')
         .trim())
@@ -114,25 +116,53 @@ function delta(value) {
  */
 export class AeroLiveRenderer {
     /**
-     * 히로인 표정 이미지를 경로별로 한 번씩 미리 불러옵니다.
+     * 라이브 배경과 히로인 pose 이미지를 경로별로 한 번씩 미리 불러옵니다.
      */
     constructor() {
         this.destroyed = false;
         this.glassSession = null;
         this.glassSessionInitialized = false;
-        this.lastBlurTimeBucket = -1;
+        this.lastBackdropRevision = '';
         this.contentLayer = 'ui';
+        this.liveBackdrop = {
+            path: LIVE_BACKGROUND_PATH,
+            image: null,
+            ready: false,
+            failed: false
+        };
         this.heroReady = false;
         this.heroFailed = false;
-        this.heroAssets = new Map();
+        this.heroPoses = new Map();
         this.heroAssetRecords = [];
+        this.heroSemanticPose = null;
+        this.heroSemanticPoseChangedAt = 0;
+        this.heroVisualStatus = null;
         const recordsByPath = new Map();
         const pendingLoads = [];
 
-        for (const [rawExpression, rawPath] of Object.entries(HERO_EXPRESSION_PATHS)) {
-            const expression = String(rawExpression || '').trim().toLowerCase();
+        if (LIVE_BACKGROUND_PATH) {
+            const image = new Image();
+            this.liveBackdrop.image = image;
+            pendingLoads.push(new Promise((resolve) => {
+                const settle = (ready) => {
+                    if (this.liveBackdrop.ready || this.liveBackdrop.failed) return;
+                    this.liveBackdrop.ready = ready;
+                    this.liveBackdrop.failed = !ready;
+                    this.lastBackdropRevision = '';
+                    resolve();
+                };
+                image.onload = () => settle(true);
+                image.onerror = () => settle(false);
+            }));
+            image.src = LIVE_BACKGROUND_PATH;
+        } else {
+            this.liveBackdrop.failed = true;
+        }
+
+        for (const [rawPose, rawPath] of Object.entries(HERO_POSE_PATHS)) {
+            const pose = String(rawPose || '').trim().toLowerCase();
             const path = String(rawPath || '').trim();
-            if (!expression || !path) continue;
+            if (!pose || !path) continue;
 
             let record = recordsByPath.get(path);
             if (!record) {
@@ -142,7 +172,7 @@ export class AeroLiveRenderer {
                     image,
                     ready: false,
                     failed: false,
-                    expressions: []
+                    poses: []
                 };
                 recordsByPath.set(path, record);
                 this.heroAssetRecords.push(record);
@@ -158,8 +188,8 @@ export class AeroLiveRenderer {
                 }));
                 image.src = path;
             }
-            record.expressions.push(expression);
-            this.heroAssets.set(expression, record);
+            record.poses.push(pose);
+            this.heroPoses.set(pose, record);
         }
 
         this.readyPromise = Promise.all(pendingLoads).then(() => {
@@ -168,13 +198,30 @@ export class AeroLiveRenderer {
     }
 
     /**
-     * 이미지 준비가 끝날 때까지 기다립니다.
+     * 라이브 배경과 히로인 이미지의 로드 성공 또는 실패가 확정될 때까지 기다립니다.
      * @returns {Promise<void>} 이미지 로드 완료 Promise입니다.
      */
     whenReady() {
-        return this.destroyed || this.heroReady || this.heroFailed
+        const heroSettled = this.heroReady || this.heroFailed;
+        const backdropSettled = this.liveBackdrop.ready || this.liveBackdrop.failed;
+        return this.destroyed || (heroSettled && backdropSettled)
             ? Promise.resolve()
             : this.readyPromise;
+    }
+
+    /**
+     * NW 스모크와 진단에서 라이브 배경 에셋 상태를 확인합니다.
+     * @returns {{ready:boolean,failed:boolean,src:string,naturalWidth:number,naturalHeight:number}} 배경 로드 요약입니다.
+     */
+    getLiveBackdropAssetStatus() {
+        const record = this.liveBackdrop || {};
+        return {
+            ready: record.ready === true,
+            failed: record.failed === true,
+            src: record.image?.src || record.path || '',
+            naturalWidth: record.image?.naturalWidth || 0,
+            naturalHeight: record.image?.naturalHeight || 0
+        };
     }
 
     /**
@@ -190,13 +237,20 @@ export class AeroLiveRenderer {
             readyCount: records.filter((record) => record.ready).length,
             failedCount: records.filter((record) => record.failed).length,
             assets: records.map((record) => ({
-                expressions: [...record.expressions],
+                poses: [...record.poses],
+                expressions: [...record.poses],
                 src: record.image?.src || record.path,
                 ready: record.ready,
                 failed: record.failed,
                 naturalWidth: record.image?.naturalWidth || 0,
                 naturalHeight: record.image?.naturalHeight || 0
-            }))
+            })),
+            activeVisual: this.heroVisualStatus
+                ? {
+                    ...this.heroVisualStatus,
+                    motion: { ...this.heroVisualStatus.motion }
+                }
+                : null
         };
     }
 
@@ -230,14 +284,27 @@ export class AeroLiveRenderer {
             }
             record.image = null;
         }
-        this.heroAssets.clear();
+        this.heroPoses.clear();
         this.heroAssetRecords = [];
         this.heroReady = false;
         this.heroFailed = false;
+        this.heroSemanticPose = null;
+        this.heroSemanticPoseChangedAt = 0;
+        this.heroVisualStatus = null;
+        if (this.liveBackdrop?.image) {
+            this.liveBackdrop.image.onload = null;
+            this.liveBackdrop.image.onerror = null;
+        }
+        this.liveBackdrop = {
+            path: LIVE_BACKGROUND_PATH,
+            image: null,
+            ready: false,
+            failed: true
+        };
         this.glassSession?.release?.();
         this.glassSession = null;
         this.glassSessionInitialized = true;
-        this.lastBlurTimeBucket = -1;
+        this.lastBackdropRevision = '';
         this.contentLayer = 'ui';
         this.context = null;
     }
@@ -252,16 +319,29 @@ export class AeroLiveRenderer {
         this.contentLayer = this.glassSession?.uiLayerId || 'ui';
     }
 
-    /** 움직이는 배경을 10Hz bucket으로 양자화해 blur texture 갱신 비용을 제한합니다. @private */
+    /** 배경 종류·크기 전환과 절차식 움직임을 blur revision으로 양자화합니다. @private */
     #syncGlassBackdropRevision() {
         if (!this.glassSession?.effectLayerId) {
             return;
         }
-        const bucket = Math.floor(Math.max(0, number(this.context?.elapsedVisualSeconds)) * 10);
-        if (bucket === this.lastBlurTimeBucket) {
+        const c = this.context || {};
+        const liveRaster = c.mode === 'live' && this.liveBackdrop.ready;
+        const bucket = liveRaster
+            ? 'static'
+            : Math.floor(Math.max(0, number(c.elapsedVisualSeconds)) * 10);
+        const revision = [
+            c.mode,
+            liveRaster ? 'live-raster' : 'procedural',
+            Math.round(number(c.WW)),
+            Math.round(number(c.WH)),
+            Math.round(number(c.UIWW)),
+            Math.round(number(c.UIOffsetX)),
+            bucket
+        ].join(':');
+        if (revision === this.lastBackdropRevision) {
             return;
         }
-        this.lastBlurTimeBucket = bucket;
+        this.lastBackdropRevision = revision;
         this.glassSession.invalidateBlur();
     }
 
@@ -301,19 +381,45 @@ export class AeroLiveRenderer {
         this.heroFailed = records.length === 0 || records.every((record) => record.failed);
     }
 
-    /** 요청 표정, 기본 표정, 첫 성공 에셋 순으로 안전한 이미지를 반환합니다. @private */
-    #heroImageForExpression(value) {
-        const expression = String(value || '').trim().toLowerCase();
-        const requested = this.heroAssets.get(expression);
-        if (requested?.ready && requested.image) return requested.image;
-        const fallback = this.heroAssets.get(HERO_FALLBACK_EXPRESSION);
-        if (fallback?.ready && fallback.image) return fallback.image;
-        return this.heroAssetRecords.find((record) => record.ready && record.image)?.image || null;
+    /** 요청 frame, 의미 pose, 기본 pose, 첫 성공 에셋 순으로 안전한 레코드를 반환합니다. @private */
+    #heroRecordForPose(value, semanticPose = HERO_FALLBACK_POSE) {
+        const pose = String(value || '').trim().toLowerCase();
+        const requested = this.heroPoses.get(pose);
+        if (requested?.ready && requested.image) return requested;
+        const semanticFallback = this.heroPoses.get(String(semanticPose || '').trim().toLowerCase());
+        if (semanticFallback?.ready && semanticFallback.image) return semanticFallback;
+        const fallback = this.heroPoses.get(HERO_FALLBACK_POSE);
+        if (fallback?.ready && fallback.image) return fallback;
+        return this.heroAssetRecords.find((record) => record.ready && record.image) || null;
     }
 
-    /** 하늘, 구름, 수평선, 원근 그리드와 진주광 기포를 그립니다. @private */
+    /** 라이브 PNG 또는 폴백 하늘·구름·원근 그리드 backdrop을 그립니다. @private */
     #backdrop() {
         const c = this.context;
+        if (c.mode === 'live' && this.liveBackdrop.ready && this.liveBackdrop.image) {
+            render('ui', {
+                shape: 'rect',
+                x: 0,
+                y: 0,
+                w: c.WW,
+                h: c.WH,
+                fill: COLORS.SKY_HAZE || '#E8FCFF'
+            });
+            render('ui', {
+                shape: 'image',
+                image: this.liveBackdrop.image,
+                sx: 0,
+                sy: 0,
+                sw: Math.max(1, number(this.liveBackdrop.image.naturalWidth || this.liveBackdrop.image.width, 1920)),
+                sh: Math.max(1, number(this.liveBackdrop.image.naturalHeight || this.liveBackdrop.image.height, 1080)),
+                x: c.layout?.backdrop?.x ?? c.UIOffsetX,
+                y: c.layout?.backdrop?.y ?? 0,
+                w: c.layout?.backdrop?.w ?? c.UIWW,
+                h: c.layout?.backdrop?.h ?? c.WH,
+                smoothing: true
+            });
+            return;
+        }
         const backdropTime = Math.floor(Math.max(0, number(c.elapsedVisualSeconds)) * 10) / 10;
         const horizonY = c.WH * .54;
         const skyDeep = COLORS.SKY_DEEP || COLORS.SKY_TOP;
@@ -482,16 +588,6 @@ export class AeroLiveRenderer {
             COLORS.INK,
             { align: 'center', weight: 950, maxWidth: rect.w * .86 }
         );
-        this.#wrapped(
-            '닉네임은 AI에 전송되지 않고 이 화면에서만 사용됩니다.',
-            rect.x + rect.w * .1,
-            rect.y + rect.h * .35,
-            rect.w * .8,
-            this.#size(UI.BODY_FONT_WH),
-            COLORS.DEEP_BLUE,
-            2,
-            'center'
-        );
         this.#label(
             c.nicknameInvalid
                 ? '입력 형식을 확인해 주세요 · 한글·영문·숫자·밑줄 2~16자'
@@ -566,12 +662,12 @@ export class AeroLiveRenderer {
 
     }
 
-    /** 3열 방송 화면을 그립니다. @private */
+    /** 메인·우상 채팅·우하 프로듀서 창으로 방송 화면을 그립니다. @private */
     #live() {
         this.#topBar();
-        this.#leftPanel();
         this.#hero();
         this.#chatPanel();
+        this.#leftPanel();
     }
 
     /** 방송 상단 상태 바를 그립니다. @private */
@@ -580,15 +676,20 @@ export class AeroLiveRenderer {
         const rect = c.layout.topBar;
         const m = c.snapshot?.metrics || {};
         const pad = c.layout.panelPad;
-        this.#panel(rect, { fill: COLORS.GLASS_FILL_STRONG, tintStrength: .15 });
+        if (!this.#usesLiveBackdrop()) {
+            this.#panel(rect, { fill: COLORS.GLASS_FILL_STRONG, tintStrength: .15 });
+        }
         const pill = { x: rect.x + pad * .6, y: rect.y + rect.h * .24, w: Math.max(64, rect.h * 1.25), h: rect.h * .52 };
         this.#drawContent({ shape: 'roundRect', ...pill, radius: 999, fill: COLORS.LIVE });
         this.#label('● LIVE', pill.x + pill.w / 2, pill.y + pill.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 950 });
         const titleX = pill.x + pill.w + pad * .7;
         this.#label(c.snapshot?.topic?.title || 'AERO LIVE', titleX, rect.y + rect.h * .34, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950, maxWidth: rect.w * .26 });
-        const mood = c.snapshot?.currentBeat?.mood;
-        this.#label(`${clock(c.snapshot?.elapsedSeconds)} · ${MOOD_LABELS[mood] || text(mood || '방송 중', 20)}`, titleX, rect.y + rect.h * .68, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { baseline: 'middle', weight: 700 });
-        this.#button(c.endButton, '방송 종료', COLORS.DARK_GLASS, COLORS.NEGATIVE, COLORS.GLASS_WHITE);
+        this.#label(clock(c.snapshot?.elapsedSeconds), titleX, rect.y + rect.h * .68, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { baseline: 'middle', weight: 700 });
+        if (this.#usesLiveBackdrop()) {
+            this.#macWindowControls(c.layout.mainWindowControls, c.endButton);
+        } else {
+            this.#button(c.endButton, '종료', COLORS.DARK_GLASS, COLORS.NEGATIVE, COLORS.GLASS_WHITE);
+        }
         const endX = c.layout.endButton.x - pad;
         const statW = Math.min(125, rect.w * .1);
         [['시청자', integer(m.viewers), COLORS.DEEP_BLUE], ['참여도', `${Math.round(number(m.engagement))}%`, COLORS.AQUA], ['수익', `${integer(m.revenue)}원`, COLORS.POSITIVE]].forEach((item, i) => {
@@ -596,17 +697,31 @@ export class AeroLiveRenderer {
             this.#label(item[0], x + statW / 2, rect.y + rect.h * .3, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'center', baseline: 'middle', weight: 700 });
             this.#label(item[1], x + statW / 2, rect.y + rect.h * .65, this.#size(UI.METRIC_FONT_WH), item[2], { align: 'center', baseline: 'middle', weight: 950, maxWidth: statW * .92 });
         });
-        this.#label(c.aiStatus || 'AI 준비', endX - statW * 3 - pad * .5, rect.y + rect.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.DEEP_BLUE, { align: 'right', baseline: 'middle', weight: 800, maxWidth: rect.w * .11 });
     }
 
-    /** 후원 카드, 방송 지표와 여섯 감정 지시를 그립니다. @private */
+    /** 우하 프로듀서 창에 후원 카드, 방송 지표와 여섯 감정 지시를 그립니다. @private */
     #leftPanel() {
         const c = this.context;
         const rect = c.layout.left;
         const m = c.snapshot?.metrics || {};
-        this.#panel(rect, { fill: COLORS.GLASS_FILL, alpha: .92, tintStrength: .16 });
-        this.#label('프로듀서 콘솔', rect.x + c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950 });
-        this.#label(`강퇴 ${integer(c.snapshot?.resources?.kicksRemaining)}회`, rect.x + rect.w - c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SMALL_FONT_WH), COLORS.NEGATIVE, { align: 'right', baseline: 'middle', weight: 850 });
+        const titleRect = this.#usesLiveBackdrop() && c.layout.producerTitleBar
+            ? c.layout.producerTitleBar
+            : rect;
+        const liveBackdrop = this.#usesLiveBackdrop();
+        if (!liveBackdrop) {
+            this.#panel(rect, { fill: COLORS.GLASS_FILL, alpha: .92, tintStrength: .16 });
+        }
+        const producerTitleY = liveBackdrop
+            ? titleRect.y + titleRect.h * .5
+            : rect.y + c.layout.panelPad * .68;
+        this.#label('프로듀서 콘솔', titleRect.x + c.layout.panelPad * .45, producerTitleY, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950 });
+        const producerStatusX = liveBackdrop
+            ? titleRect.x + titleRect.w * .67
+            : titleRect.x + titleRect.w - c.layout.panelPad * .45;
+        this.#label(`강퇴 ${integer(c.snapshot?.resources?.kicksRemaining)}회`, producerStatusX, producerTitleY, this.#size(UI.SMALL_FONT_WH), COLORS.NEGATIVE, { align: 'right', baseline: 'middle', weight: 850, maxWidth: titleRect.w * .24 });
+        if (liveBackdrop) {
+            this.#macWindowControls(c.layout.producerWindowControls);
+        }
         this.#donation();
         const rows = [
             ['스트레스', m.stress, COLORS.NEGATIVE, false],
@@ -614,8 +729,13 @@ export class AeroLiveRenderer {
             ['여론', m.opinion, COLORS.DEEP_BLUE, true],
             ['참여도', m.engagement, COLORS.AQUA, false]
         ];
-        const area = c.layout.metricArea;
-        rows.forEach((row, index) => this.#meter(row[0], row[1], row[2], { x: area.x, y: area.y + area.h / 4 * index, w: area.w, h: area.h / 4 }, row[3]));
+        const metricRects = Array.isArray(c.layout.metricRects) && c.layout.metricRects.length === rows.length
+            ? c.layout.metricRects
+            : rows.map((_, index) => {
+                const area = c.layout.metricArea;
+                return { x: area.x, y: area.y + area.h / 4 * index, w: area.w, h: area.h / 4 };
+            });
+        rows.forEach((row, index) => this.#meter(row[0], row[1], row[2], metricRects[index], row[3]));
         c.donationButtons.forEach((button) => this.#button(button, button.aeroData?.label || '지시', COLORS.DARK_GLASS, COLORS.AQUA, COLORS.GLASS_WHITE, button.aeroDisabled));
     }
 
@@ -626,7 +746,6 @@ export class AeroLiveRenderer {
         const rect = c.layout.donationCard;
         this.#panel(rect, { fill: d ? 'rgba(255,214,90,0.22)' : COLORS.GLASS_FILL_STRONG, stroke: d ? COLORS.WARNING : COLORS.GLASS_BORDER, lineWidth: d ? 2.5 : 1.2 });
         if (!d) {
-            this.#label('후원 신호 대기 중', rect.x + rect.w / 2, rect.y + rect.h * .43, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { align: 'center', baseline: 'middle', weight: 900 });
             return;
         }
         this.#label(`${text(d.author, 24)} · ${integer(d.amount)}원`, rect.x + rect.w * .07, rect.y + rect.h * .19, this.#size(UI.BODY_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950, maxWidth: rect.w * .86 });
@@ -634,7 +753,7 @@ export class AeroLiveRenderer {
         this.#timer({ x: rect.x + rect.w * .07, y: rect.y + rect.h * .81, w: rect.w * .86, h: Math.max(8, rect.h * .08) }, d.timeRemainingSeconds, c.timerMaximums.donation, COLORS.WARNING, '후원', COLORS.INK);
     }
 
-    /** 중앙 히로인 스튜디오와 대사를 그립니다. @private */
+    /** 메인 창의 히로인 스튜디오와 대사를 그립니다. @private */
     #hero() {
         const c = this.context;
         const stage = c.layout.heroStage;
@@ -644,53 +763,86 @@ export class AeroLiveRenderer {
         const activeExpression = c.heroResponseText
             ? (c.heroResponseExpression || beat.expression)
             : beat.expression;
-        const heroImage = this.#heroImageForExpression(activeExpression);
-        this.#panel(c.layout.center, { fill: COLORS.GLASS_FILL, alpha: .89, tintColor: COLORS.AERO_PINK || COLORS.SKY_HAZE, tintStrength: .07 });
-        this.#drawContent({
-            shape: 'roundRect',
-            x: stage.x - 2, y: stage.y - 2, w: stage.w + 4, h: stage.h + 4,
-            radius: this.#radius() + 2,
-            fill: 'rgba(255,255,255,0.14)',
-            stroke: COLORS.AQUA,
-            lineWidth: 2,
-            shadowBlur: 18,
-            shadowColor: 'rgba(66,224,208,0.35)'
+        const visualSeconds = Math.max(0, number(c.elapsedVisualSeconds));
+        const semanticPose = resolveAeroLiveHeroPose({
+            topicId: c.snapshot?.topic?.id,
+            expression: activeExpression,
+            expressionPoses: HERO_EXPRESSION_POSES
         });
-        this.#drawContent({ shape: 'roundRect', ...stage, radius: this.#radius(), fill: heroImage ? COLORS.GLASS_WHITE : COLORS.DARK_GLASS });
-        if (heroImage) this.#imageUpperBody(stage, heroImage);
+        if (semanticPose !== this.heroSemanticPose) {
+            this.heroSemanticPose = semanticPose;
+            this.heroSemanticPoseChangedAt = visualSeconds;
+        }
+        const animationFrame = getAeroLiveHeroAnimationFrame({
+            pose: semanticPose,
+            elapsedSeconds: visualSeconds,
+            poseAgeSeconds: visualSeconds - this.heroSemanticPoseChangedAt
+        });
+        const heroRecord = this.#heroRecordForPose(animationFrame.assetKey, semanticPose);
+        const heroImage = heroRecord?.image || null;
+        this.heroVisualStatus = {
+            topicId: c.snapshot?.topic?.id || null,
+            beatId: beat.id || null,
+            expression: String(activeExpression || ''),
+            pose: semanticPose,
+            assetKey: animationFrame.assetKey,
+            resolvedPoses: heroRecord ? [...heroRecord.poses] : [],
+            src: heroRecord?.image?.src || heroRecord?.path || '',
+            motion: { ...animationFrame.motion }
+        };
+        const liveBackdrop = this.#usesLiveBackdrop();
+        if (!liveBackdrop) {
+            this.#panel(c.layout.center, { fill: COLORS.GLASS_FILL, alpha: .89, tintColor: COLORS.AERO_PINK || COLORS.SKY_HAZE, tintStrength: .07 });
+            this.#drawContent({
+                shape: 'roundRect',
+                x: stage.x - 2, y: stage.y - 2, w: stage.w + 4, h: stage.h + 4,
+                radius: this.#radius() + 2,
+                fill: 'rgba(255,255,255,0.14)',
+                stroke: COLORS.AQUA,
+                lineWidth: 2,
+                shadowBlur: 18,
+                shadowColor: 'rgba(66,224,208,0.35)'
+            });
+            this.#drawContent({ shape: 'roundRect', ...stage, radius: this.#radius(), fill: heroImage ? COLORS.GLASS_WHITE : COLORS.DARK_GLASS });
+        }
+        const heroImageRect = liveBackdrop
+            ? {
+                x: stage.x + stage.w * .19,
+                y: stage.y,
+                w: stage.w * .62,
+                h: stage.h
+            }
+            : stage;
+        if (heroImage) this.#imageUpperBody(heroImageRect, heroImage, animationFrame.motion);
         else {
             this.#drawContent({ shape: 'circle', x: stage.x + stage.w / 2, y: stage.y + stage.h * .49, radius: Math.min(stage.w, stage.h) * .22, fill: COLORS.AQUA, alpha: .45 });
             this.#label('AERO', stage.x + stage.w / 2, stage.y + stage.h * .49, this.#size(UI.TITLE_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 950 });
         }
-        this.#drawContent({
-            shape: 'roundRect', ...stage, radius: this.#radius(), fill: false,
-            stroke: COLORS.GLASS_BORDER, lineWidth: 2
-        });
-        this.#drawContent({
-            shape: 'roundRect',
-            x: stage.x + stage.w * .08,
-            y: stage.y + stage.h - Math.max(4, stage.h * .012),
-            w: stage.w * .84,
-            h: Math.max(4, stage.h * .012),
-            radius: 999,
-            fill: {
-                type: 'linear', x1: stage.x, y1: 0, x2: stage.x + stage.w, y2: 0,
-                stops: [
-                    { offset: 0, color: COLORS.AQUA },
-                    { offset: .5, color: COLORS.GLASS_WHITE },
-                    { offset: 1, color: COLORS.AERO_PINK || '#FF86D7' }
-                ]
-            },
-            alpha: .84,
-            shadowBlur: 10,
-            shadowColor: COLORS.AERO_PINK || '#FF86D7'
-        });
-        const tag = { x: stage.x + stage.w * .03, y: stage.y + stage.h * .035, w: stage.w * .31, h: Math.max(28, stage.h * .075) };
-        this.#drawContent({ shape: 'roundRect', ...tag, radius: 999, fill: COLORS.DARK_GLASS, alpha: .84 });
-        const expressionLabel = EXPRESSION_LABELS[activeExpression]
-            || text(activeExpression || '기본', 14);
-        const moodLabel = MOOD_LABELS[beat.mood] || text(beat.mood || '평온', 14);
-        this.#label(`${expressionLabel} · ${moodLabel}`, tag.x + tag.w / 2, tag.y + tag.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 850, maxWidth: tag.w * .9 });
+        if (!liveBackdrop) {
+            this.#drawContent({
+                shape: 'roundRect', ...stage, radius: this.#radius(), fill: false,
+                stroke: COLORS.GLASS_BORDER, lineWidth: 2
+            });
+            this.#drawContent({
+                shape: 'roundRect',
+                x: stage.x + stage.w * .08,
+                y: stage.y + stage.h - Math.max(4, stage.h * .012),
+                w: stage.w * .84,
+                h: Math.max(4, stage.h * .012),
+                radius: 999,
+                fill: {
+                    type: 'linear', x1: stage.x, y1: 0, x2: stage.x + stage.w, y2: 0,
+                    stops: [
+                        { offset: 0, color: COLORS.AQUA },
+                        { offset: .5, color: COLORS.GLASS_WHITE },
+                        { offset: 1, color: COLORS.AERO_PINK || '#FF86D7' }
+                    ]
+                },
+                alpha: .84,
+                shadowBlur: 10,
+                shadowColor: COLORS.AERO_PINK || '#FF86D7'
+            });
+        }
         if (activeDonation) {
             this.#timer({ x: stage.x + stage.w * .2, y: stage.y + stage.h * .91, w: stage.w * .6, h: Math.max(9, stage.h * .022) }, activeDonation.timeRemainingSeconds, c.timerMaximums.donation, COLORS.WARNING, '후원 디렉션');
         }
@@ -701,33 +853,36 @@ export class AeroLiveRenderer {
             edgeColor: COLORS.AQUA,
             lineWidth: 1.5
         });
-        this.#label(`BEAT ${number(beat.index) + 1} / ${Math.max(1, number(beat.total, 1))}`, dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .22, this.#size(UI.SMALL_FONT_WH), COLORS.AQUA, { baseline: 'middle', weight: 900 });
         if (c.heroResponseText) {
             const responseLabel = c.heroResponseLabel || '실시간 답변';
-            this.#label(responseLabel, dialogue.x + dialogue.w * .23, dialogue.y + dialogue.h * .22, this.#size(UI.SMALL_FONT_WH), responseLabel === '채팅 답변' ? COLORS.AQUA : COLORS.WARNING, { baseline: 'middle', weight: 900 });
+            this.#label(responseLabel, dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .22, this.#size(UI.SMALL_FONT_WH), responseLabel === '채팅 답변' ? COLORS.AQUA : COLORS.WARNING, { baseline: 'middle', weight: 900 });
         }
         this.#wrapped(c.heroResponseText || beat.heroText || '방송 시작을 준비하고 있어요.', dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .4, dialogue.w * .89, this.#size(UI.DIALOGUE_FONT_WH), COLORS.GLASS_WHITE, 3);
     }
 
-    /** 우측 일반·핵심 채팅과 관리 버튼을 그립니다. @private */
+    /** 우상 창의 일반·핵심 채팅과 관리 버튼을 그립니다. @private */
     #chatPanel() {
         const c = this.context;
         const rect = c.layout.right;
         const resources = c.snapshot?.resources || {};
-        this.#panel(rect, { fill: COLORS.GLASS_FILL, alpha: .92, tintStrength: .16 });
+        if (!this.#usesLiveBackdrop()) {
+            this.#panel(rect, { fill: COLORS.GLASS_FILL, alpha: .92, tintStrength: .16 });
+        }
         this.#label('실시간 채팅', rect.x + c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950 });
         this.#label(`자유 채팅 ${integer(resources.playerMessagesRemaining)}회`, rect.x + rect.w - c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SMALL_FONT_WH), COLORS.DEEP_BLUE, { align: 'right', baseline: 'middle', weight: 850 });
+        if (this.#usesLiveBackdrop()) {
+            this.#macWindowControls(c.layout.chatWindowControls);
+        }
         this.#chats();
         c.coreButtons.forEach((button) => {
             const id = button.aeroData?.id;
             const label = id === 'kick' ? `강퇴 ${integer(resources.kicksRemaining)}` : button.aeroData?.label;
             this.#button(button, label || '처리', COLORS.DARK_GLASS, CORE_COLORS[id] || COLORS.AQUA, COLORS.GLASS_WHITE, button.aeroDisabled);
         });
-        const composer = c.layout.composer;
-        const state = c.inputClassificationPending
-            ? 'AI 판정 중 · 활성 이벤트 타이머 일시정지'
-            : `${c.playerName || '플레이어'}님의 닉네임은 AI에 전송되지 않습니다.`;
-        this.#label(state, composer.x, composer.y - c.layout.gap * .42, this.#size(UI.SMALL_FONT_WH), c.inputClassificationPending ? COLORS.NEGATIVE : COLORS.INK_MUTED, { baseline: 'bottom', weight: 800, maxWidth: composer.w });
+        if (c.inputClassificationPending) {
+            const composer = c.layout.composer;
+            this.#label('AI 판정 중 · 활성 이벤트 타이머 일시정지', composer.x, composer.y - c.layout.gap * .42, this.#size(UI.SMALL_FONT_WH), COLORS.NEGATIVE, { baseline: 'bottom', weight: 800, maxWidth: composer.w });
+        }
     }
 
     /** 최근 일반·핵심 채팅을 같은 피드의 고정 행으로 그립니다. @private */
@@ -890,14 +1045,6 @@ export class AeroLiveRenderer {
         const rightX = right.x + right.w * .05;
         const rightW = right.w * .9;
         this.#label('프로듀서 리포트', rightX, right.y + right.h * .07, this.#size(UI.SUBTITLE_FONT_WH), COLORS.DEEP_BLUE, { baseline: 'middle', weight: 950 });
-        const ratingLabels = {
-            'healthy-community': '건강한 커뮤니티',
-            'balanced-broadcast': '균형 잡힌 방송',
-            'volatile-growth': '위태로운 성장',
-            'protective-early-end': '보호적 조기 종료',
-            'emergency-collapse': '방송 붕괴'
-        };
-        this.#label(ratingLabels[result.rating] || text(result.rating, 24), rightX + rightW, right.y + right.h * .07, this.#size(UI.BODY_FONT_WH), endColor, { align: 'right', baseline: 'middle', weight: 900, maxWidth: rightW * .42 });
         const report = [
             ['핵심 채팅 성공', `${integer(core.succeeded ?? s.coreChatsSucceeded)}/${integer(core.presented ?? s.coreChatsPresented)}건`, COLORS.DEEP_BLUE],
             ['긍정 채팅 오강퇴', `${integer(core.wrongPositiveKicks ?? s.wrongPositiveKicks)}건`, COLORS.NEGATIVE],
@@ -1036,7 +1183,16 @@ export class AeroLiveRenderer {
         const font = createFontString({ weight: 850, sizePx: this.#size(UI.BODY_FONT_WH), family: FONT_FAMILY });
         const toastText = this.#displayText(c.toastText, 500);
         const width = Math.min(c.UIWW * .66, Math.max(260, measureText(toastText, font) + 54));
-        const rect = { x: c.UIOffsetX + (c.UIWW - width) / 2, y: c.mode === 'live' ? c.WH * .91 : c.WH * .89, w: width, h: Math.max(42, c.WH * .062) };
+        const height = Math.max(42, c.WH * .062);
+        const liveY = c.layout?.heroDialogue
+            ? c.layout.heroDialogue.y - height - c.layout.gap * .6
+            : c.WH * .84;
+        const rect = {
+            x: c.UIOffsetX + (c.UIWW - width) / 2,
+            y: c.mode === 'live' ? liveY : c.WH * .89,
+            w: width,
+            h: height
+        };
         const alpha = clamp(c.toastSecondsRemaining * 2, 0, 1);
         this.#drawContent({ shape: 'roundRect', ...rect, radius: 999, fill: COLORS.DARK_GLASS, stroke: COLORS.AQUA, lineWidth: 1.5, alpha });
         this.#label(toastText, rect.x + rect.w / 2, rect.y + rect.h / 2, this.#size(UI.BODY_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 850, maxWidth: rect.w - 36, alpha });
@@ -1101,6 +1257,54 @@ export class AeroLiveRenderer {
         this.#label(`${label} · ${Math.ceil(left)}초${this.context.inputClassificationPending ? ' · PAUSE' : ''}`, rect.x + rect.w, rect.y - Math.max(5, rect.h * .55), this.#size(UI.SMALL_FONT_WH), labelColor, { align: 'right', baseline: 'bottom', weight: 900, maxWidth: rect.w });
     }
 
+    /** 우상단에 광택과 그림자가 있는 macOS형 빨강·노랑·초록 창 컨트롤을 그립니다. @private */
+    #macWindowControls(layout, closeButton = null) {
+        if (!layout || !Array.isArray(layout.buttons)) return;
+        const styles = {
+            red: { top: '#FF8B85', middle: '#FF5F57', bottom: '#D93630', shadow: 'rgba(202,39,35,0.5)' },
+            yellow: { top: '#FFE37A', middle: '#FFBD2E', bottom: '#D99709', shadow: 'rgba(191,130,7,0.46)' },
+            green: { top: '#75E58D', middle: '#28C840', bottom: '#15992E', shadow: 'rgba(20,145,45,0.46)' }
+        };
+        const closeHover = closeButton?.visible && !closeButton.aeroDisabled
+            ? clamp(closeButton.hoverValue, 0, 1)
+            : 0;
+        for (const control of layout.buttons) {
+            const style = styles[control.color] || styles.green;
+            const hover = control.id === 'close' ? closeHover : 0;
+            const radius = Math.max(2, number(control.radius, 5) * (1 + hover * .08));
+            this.#drawContent({
+                shape: 'circle',
+                x: control.x,
+                y: control.y,
+                radius,
+                fill: {
+                    type: 'linear',
+                    x1: 0,
+                    y1: control.y - radius,
+                    x2: 0,
+                    y2: control.y + radius,
+                    stops: [
+                        { offset: 0, color: style.top },
+                        { offset: .5, color: style.middle },
+                        { offset: 1, color: style.bottom }
+                    ]
+                },
+                stroke: hover > 0 ? COLORS.GLASS_WHITE : 'rgba(74,55,48,0.34)',
+                lineWidth: Math.max(1, radius * .08),
+                shadowBlur: radius * (.42 + hover * .36),
+                shadowColor: style.shadow
+            });
+            this.#drawContent({
+                shape: 'circle',
+                x: control.x - radius * .24,
+                y: control.y - radius * .31,
+                radius: Math.max(1.5, radius * .32),
+                fill: COLORS.GLASS_WHITE,
+                alpha: .46 + hover * .14
+            });
+        }
+    }
+
     /** 풀링 버튼 상태를 사용자 정의 Canvas 버튼으로 그립니다. @private */
     #button(button, label, fill, stroke, textColor, disabled = false) {
         if (!button?.visible) return;
@@ -1135,6 +1339,13 @@ export class AeroLiveRenderer {
             });
         }
         this.#label(label, rect.x + rect.w / 2, rect.y + rect.h / 2, Math.min(this.#size(UI.BODY_FONT_WH), rect.h * .34), textColor, { align: 'center', baseline: 'middle', weight: 900, maxWidth: rect.w * .9, alpha: disabled ? .55 : 1 });
+    }
+
+    /** 현재 프레임이 준비된 라이브 방송 배경을 사용하는지 반환합니다. @private */
+    #usesLiveBackdrop() {
+        return this.context?.mode === 'live'
+            && this.liveBackdrop?.ready === true
+            && !!this.liveBackdrop?.image;
     }
 
     /** 유리 패널을 그립니다. @private */
@@ -1243,8 +1454,8 @@ export class AeroLiveRenderer {
         lines.forEach((line, index) => this.#label(line, align === 'center' ? x + width / 2 : x, y + index * size * 1.28, size, color, { align, weight: 750, maxWidth: width }));
     }
 
-    /** 세로 원본의 머리부터 허리 부근까지를 방송 화면 비율에 맞춰 중앙 크롭합니다. @private */
-    #imageUpperBody(rect, image) {
+    /** 세로 원본의 상반신 crop에 하단 앵커형 호흡·탄성 transform을 적용합니다. @private */
+    #imageUpperBody(rect, image, motion = {}) {
         const sourceW = Math.max(1, number(image.naturalWidth || image.width, 1));
         const sourceH = Math.max(1, number(image.naturalHeight || image.height, 1));
         const targetAspect = Math.max(.1, rect.w / Math.max(1, rect.h));
@@ -1257,6 +1468,12 @@ export class AeroLiveRenderer {
             cropW = Math.min(sourceW, cropH * targetAspect);
         }
         const cropX = (sourceW - cropW) / 2;
+        const scaleX = clamp(number(motion.scaleX, 1), .92, 1.08);
+        const scaleY = clamp(number(motion.scaleY, 1), .92, 1.08);
+        const drawW = rect.w * scaleX;
+        const drawH = rect.h * scaleY;
+        const offsetX = rect.w * clamp(number(motion.offsetXRatio), -.05, .05);
+        const offsetY = rect.h * clamp(number(motion.offsetYRatio), -.05, .05);
         this.#drawContent({
             shape: 'image',
             image,
@@ -1264,10 +1481,11 @@ export class AeroLiveRenderer {
             sy: upperTop,
             sw: cropW,
             sh: cropH,
-            x: rect.x,
-            y: rect.y,
-            w: rect.w,
-            h: rect.h,
+            x: rect.x + (rect.w - drawW) / 2 + offsetX,
+            y: rect.y + rect.h - drawH + offsetY,
+            w: drawW,
+            h: drawH,
+            rotation: clamp(number(motion.rotation), -2.5, 2.5),
             smoothing: true,
             clipRect: rect
         });
