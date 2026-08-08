@@ -66,7 +66,7 @@ export class AeroLiveNicknameComposer {
             borderWidth: cssPixel(borderPixels),
             borderRadius: cssPixel(viewportHeight * UI.PANEL_RADIUS_WH / 100),
             borderColor: state.invalid ? COLORS.NEGATIVE : COLORS.AQUA,
-            boxShadow: `0 ${cssPixel(viewportHeight * 0.016)} ${cssPixel(viewportHeight * 0.05)} ${COLORS.GLASS_SHADOW}`
+            boxShadow: `0 ${cssPixel(viewportHeight * 0.008)} ${cssPixel(viewportHeight * 0.024)} ${COLORS.GLASS_SHADOW}`
         });
         Object.assign(this.input.style, {
             padding: `0 ${cssPixel(uiWidth * 0.014)}`,
@@ -149,7 +149,7 @@ export class AeroLiveNicknameComposer {
             boxSizing: 'border-box',
             overflow: 'hidden',
             pointerEvents: 'auto',
-            background: 'linear-gradient(180deg, rgba(14,57,84,0.9), rgba(7,35,59,0.82))',
+            background: 'linear-gradient(180deg, rgba(14,57,84,0.78), rgba(7,35,59,0.68))',
             backdropFilter: 'blur(22px) saturate(150%)',
             WebkitBackdropFilter: 'blur(22px) saturate(150%)',
             borderStyle: 'solid',

@@ -536,6 +536,7 @@ export class AeroLiveScene extends BaseScene {
         this.layout.endButton = copyRect(mainWindowControls.buttons[0]?.hitRect);
 
         const producerPad = Math.max(4, panelPad * 0.75);
+        const producerTopPad = Math.max(producerPad, panelPad * 1.15);
         const producerGap = Math.max(4, gap * 0.62);
         const producerInnerX = producerContent.x + producerPad;
         const producerInnerW = Math.max(1, producerContent.w - producerPad * 2);
@@ -547,13 +548,13 @@ export class AeroLiveScene extends BaseScene {
         const metricW = Math.max(1, (producerInnerW - metricGap * 3) / 4);
         this.layout.metricRects = Array.from({ length: 4 }, (_, index) => ({
             x: producerInnerX + index * (metricW + metricGap),
-            y: producerContent.y + producerPad,
+            y: producerContent.y + producerTopPad,
             w: metricW,
             h: metricH
         }));
         this.layout.metricArea = {
             x: producerInnerX,
-            y: producerContent.y + producerPad,
+            y: producerContent.y + producerTopPad,
             w: producerInnerW,
             h: metricH
         };

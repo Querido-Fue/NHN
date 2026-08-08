@@ -249,7 +249,8 @@ export const GLASS_PANEL_FRAGMENT_SHADER = `
 
         vec4 blurColor = texture2D(u_blurTexture, screenUv + refractOffset);
         vec3 glassColor = blurColor.rgb;
-        float fillBlend = mix(min(u_fillColor.a, 0.24), 1.0, step(0.999, u_fillColor.a));
+        float translucentFill = clamp(u_fillColor.a * 0.52, 0.0, 0.22);
+        float fillBlend = mix(translucentFill, 1.0, step(0.999, u_fillColor.a));
         float tintBlend = clamp(u_tintStrength * u_tintColor.a, 0.0, 1.0);
         glassColor = mix(glassColor, u_fillColor.rgb, fillBlend);
         glassColor = mix(glassColor, u_tintColor.rgb, tintBlend);
@@ -258,11 +259,14 @@ export const GLASS_PANEL_FRAGMENT_SHADER = `
         float innerMask = 1.0 - smoothstep(0.0, 1.5, sdf);
         float edgeFactor = innerMask * (1.0 - smoothstep(0.0, max(1.0, u_lineWidth * 1.5), insideDistance));
         float strokeFactor = innerMask * (1.0 - smoothstep(u_lineWidth, u_lineWidth + 1.0, insideDistance));
-        float highlight = pow(1.0 - abs(centeredUv.y), 3.0) * 0.35;
-
-        vec3 edgeLighting = u_edgeColor.rgb * edgeFactor * u_edgeStrength;
-        vec3 topHighlight = u_edgeColor.rgb * highlight * u_edgeStrength * 0.4;
-        vec4 fillColor = vec4(glassColor + edgeLighting + topHighlight, max(blurColor.a, u_fillColor.a));
+        float topBias = 1.0 - clamp(v_panelLocal.y / max(v_panelSize.y, 1.0), 0.0, 1.0);
+        float rimBlend = clamp(
+            edgeFactor * u_edgeStrength * mix(0.18, 1.0, pow(topBias, 2.0)),
+            0.0,
+            0.28
+        );
+        glassColor = mix(glassColor, u_edgeColor.rgb, rimBlend);
+        vec4 fillColor = vec4(glassColor, max(blurColor.a, u_fillColor.a));
 
         vec4 strokeColor = u_strokeColor * strokeFactor;
         vec4 finalColor = mix(fillColor, strokeColor, strokeColor.a);

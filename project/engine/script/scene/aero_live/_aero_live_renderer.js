@@ -15,6 +15,7 @@ const AERO_CONSTANTS = getData('AERO_LIVE_SCENE_CONSTANTS');
 const UI = AERO_CONSTANTS.UI;
 const COLORS = AERO_CONSTANTS.COLORS;
 const WALLPAPER = AERO_CONSTANTS.ASSET.WALLPAPER || {};
+const LIVE_STAGE_BACKGROUND_PATH = AERO_CONSTANTS.ASSET.LIVE_STAGE_BACKGROUND_PATH || '';
 const HERO_POSE_PATHS = AERO_CONSTANTS.ASSET.HERO_POSE_PATHS || {};
 const HERO_EXPRESSION_POSES = AERO_CONSTANTS.ASSET.HERO_EXPRESSION_POSES || {};
 const HERO_FALLBACK_POSE = AERO_CONSTANTS.ASSET.HERO_FALLBACK_POSE || 'neutral';
@@ -36,12 +37,12 @@ const CORE_COLORS = Object.freeze({
     ignore: COLORS.NEUTRAL
 });
 const GLASS_STYLE = Object.freeze({
-    BLUR: 16,
-    TINT_STRENGTH: 0.2,
-    EDGE_STRENGTH: 0.5,
-    REFRACTION_STRENGTH: 4,
-    SHADOW_RADIUS: 18,
-    SHADOW_OFFSET_Y: 7
+    BLUR: 20,
+    TINT_STRENGTH: 0.12,
+    EDGE_STRENGTH: 0.26,
+    REFRACTION_STRENGTH: 2,
+    SHADOW_RADIUS: 9,
+    SHADOW_OFFSET_Y: 4
 });
 /**
  * 숫자를 지정한 범위로 제한합니다.
@@ -129,6 +130,13 @@ export class AeroLiveRenderer {
         this.wallpaperRenderedThisFrame = false;
         this.wallpaperAssetRecords = [];
         this.wallpaperAssets = {};
+        this.liveStageBackground = {
+            path: LIVE_STAGE_BACKGROUND_PATH,
+            image: null,
+            ready: false,
+            failed: false
+        };
+        this.liveStageBackgroundRenderedThisFrame = false;
         this.disableTransparency = typeof getSetting === 'function'
             && getSetting('disableTransparency') === true;
         this.heroReady = false;
@@ -181,6 +189,25 @@ export class AeroLiveRenderer {
             image.src = path;
         }
 
+        if (LIVE_STAGE_BACKGROUND_PATH) {
+            const image = new Image();
+            const record = this.liveStageBackground;
+            record.image = image;
+            pendingLoads.push(new Promise((resolve) => {
+                const settle = (ready) => {
+                    if (record.ready || record.failed) return;
+                    record.ready = ready;
+                    record.failed = !ready;
+                    resolve();
+                };
+                image.onload = () => settle(true);
+                image.onerror = () => settle(false);
+            }));
+            image.src = LIVE_STAGE_BACKGROUND_PATH;
+        } else {
+            this.liveStageBackground.failed = true;
+        }
+
         for (const [rawPose, rawPath] of Object.entries(HERO_POSE_PATHS)) {
             const pose = String(rawPose || '').trim().toLowerCase();
             const path = String(rawPath || '').trim();
@@ -226,13 +253,14 @@ export class AeroLiveRenderer {
     }
 
     /**
-     * wallpaper 네 장과 히로인 이미지의 로드 성공 또는 실패가 확정될 때까지 기다립니다.
+     * wallpaper 네 장, 라이브 stage 배경과 히로인 이미지의 로드 성공 또는 실패가 확정될 때까지 기다립니다.
      * @returns {Promise<void>} 이미지 로드 완료 Promise입니다.
      */
     whenReady() {
         const heroSettled = this.heroReady || this.heroFailed;
         const wallpaperSettled = this.wallpaperAssetRecords.every((record) => record.ready || record.failed);
-        return this.destroyed || (heroSettled && wallpaperSettled)
+        const liveStageSettled = this.liveStageBackground.ready || this.liveStageBackground.failed;
+        return this.destroyed || (heroSettled && wallpaperSettled && liveStageSettled)
             ? Promise.resolve()
             : this.readyPromise;
     }
@@ -280,6 +308,22 @@ export class AeroLiveRenderer {
     /** 이전 smoke 소비자용 호환 alias입니다. @returns {object} wallpaper 진단입니다. */
     getLiveBackdropAssetStatus() {
         return this.getWallpaperEffectStatus();
+    }
+
+    /**
+     * 기존 방송 studio 배경 에셋의 로드 상태를 반환합니다.
+     * @returns {{ready:boolean,failed:boolean,renderedThisFrame:boolean,src:string,naturalWidth:number,naturalHeight:number}}
+     */
+    getLiveStageBackgroundAssetStatus() {
+        const record = this.liveStageBackground || {};
+        return {
+            ready: record.ready === true,
+            failed: record.failed === true,
+            renderedThisFrame: this.liveStageBackgroundRenderedThisFrame === true,
+            src: record.image?.src || record.path || '',
+            naturalWidth: record.image?.naturalWidth || 0,
+            naturalHeight: record.image?.naturalHeight || 0
+        };
     }
 
     /**
@@ -332,6 +376,7 @@ export class AeroLiveRenderer {
     draw(context) {
         if (this.destroyed || !context) return;
         this.context = context;
+        this.liveStageBackgroundRenderedThisFrame = false;
         this.#ensureGlassSession();
         this.#backdrop();
         this.#syncGlassBackdropRevision();
@@ -374,6 +419,17 @@ export class AeroLiveRenderer {
         this.wallpaperAssetRecords = [];
         this.wallpaperAssets = {};
         this.wallpaperRenderedThisFrame = false;
+        if (this.liveStageBackground?.image) {
+            this.liveStageBackground.image.onload = null;
+            this.liveStageBackground.image.onerror = null;
+        }
+        this.liveStageBackground = {
+            path: LIVE_STAGE_BACKGROUND_PATH,
+            image: null,
+            ready: false,
+            failed: true
+        };
+        this.liveStageBackgroundRenderedThisFrame = false;
         this.glassSession?.release?.();
         this.glassSession = null;
         this.glassSessionInitialized = true;
@@ -562,8 +618,8 @@ export class AeroLiveRenderer {
                 shape: 'circle', x: sunX, y: sunY, radius: radius * c.WH / 720,
                 fill: index === 2 ? '#FFFBD9' : COLORS.GLASS_WHITE,
                 alpha: [.08, .12, .72][index],
-                shadowBlur: index === 2 ? 30 : 0,
-                shadowColor: 'rgba(255,246,190,0.72)'
+                shadowBlur: index === 2 ? 14 : 0,
+                shadowColor: 'rgba(255,246,190,0.46)'
             });
         });
 
@@ -630,8 +686,8 @@ export class AeroLiveRenderer {
                 radius: Math.max(8, radius * scale),
                 fill: COLORS.CLOUD_WHITE || COLORS.GLASS_WHITE,
                 alpha,
-                shadowBlur: Math.max(8, 18 * scale),
-                shadowColor: 'rgba(210,246,255,0.52)'
+                shadowBlur: Math.max(4, 9 * scale),
+                shadowColor: 'rgba(210,246,255,0.3)'
             });
         });
         render('ui', {
@@ -657,8 +713,8 @@ export class AeroLiveRenderer {
             radius: Math.max(2, radius * .12),
             fill: COLORS.GLASS_WHITE,
             alpha: .76,
-            shadowBlur: Math.max(3, radius * .16),
-            shadowColor: COLORS.GLASS_WHITE
+            shadowBlur: Math.max(2, radius * .08),
+            shadowColor: 'rgba(245,254,255,0.5)'
         });
     }
 
@@ -670,8 +726,8 @@ export class AeroLiveRenderer {
             stroke: index % 2 === 0 ? COLORS.GLASS_BORDER : accent,
             lineWidth: Math.max(1.2, radius * .055),
             alpha: .58,
-            shadowBlur: Math.max(4, radius * .18),
-            shadowColor: index % 2 === 0 ? 'rgba(71,216,255,0.26)' : 'rgba(255,134,215,0.24)'
+            shadowBlur: Math.max(2, radius * .08),
+            shadowColor: index % 2 === 0 ? 'rgba(71,216,255,0.12)' : 'rgba(255,134,215,0.12)'
         });
     }
 
@@ -683,18 +739,19 @@ export class AeroLiveRenderer {
         this.#label('AERO LIVE', center, c.WH * .1, this.#size(UI.TITLE_FONT_WH), COLORS.INK, {
             align: 'center',
             weight: 950,
-            shadowBlur: 16,
-            shadowColor: 'rgba(66,224,208,0.48)'
+            shadowBlur: 4,
+            shadowColor: 'rgba(66,224,208,0.24)'
         });
         this.#panel(rect, {
             fill: COLORS.GLASS_FILL_STRONG,
-            stroke: c.nicknameInvalid ? COLORS.NEGATIVE : COLORS.AQUA,
-            edgeColor: c.nicknameInvalid ? COLORS.NEGATIVE : COLORS.AQUA,
+            stroke: c.nicknameInvalid ? COLORS.NEGATIVE : COLORS.GLASS_BORDER,
+            edgeColor: c.nicknameInvalid ? COLORS.NEGATIVE : COLORS.GLASS_HIGHLIGHT,
             tintColor: COLORS.AQUA,
-            tintStrength: .1,
-            lineWidth: 2.2,
-            shadowColor: c.nicknameInvalid ? COLORS.NEGATIVE : COLORS.AQUA,
-            shadowRadius: 22
+            tintStrength: .07,
+            edgeStrength: c.nicknameInvalid ? .34 : .18,
+            lineWidth: c.nicknameInvalid ? 2 : 1.4,
+            shadowColor: COLORS.GLASS_SHADOW,
+            shadowRadius: c.nicknameInvalid ? 10 : 6
         });
         this.#label(
             '방송에서 사용할 닉네임을 정해 주세요',
@@ -721,14 +778,14 @@ export class AeroLiveRenderer {
         const c = this.context;
         const center = c.UIOffsetX + c.UIWW / 2;
         this.#label('AERO LIVE', center, c.WH * .095, this.#size(UI.TITLE_FONT_WH), COLORS.INK, {
-            align: 'center', weight: 950, shadowBlur: 16, shadowColor: 'rgba(66,224,208,0.48)'
+            align: 'center', weight: 950, shadowBlur: 4, shadowColor: 'rgba(66,224,208,0.24)'
         });
         this.#label(
             `${c.playerName || '플레이어'}님, 오늘 방송 주제를 선택해 주세요`,
             center,
             c.WH * .17,
             this.#size(UI.BODY_FONT_WH),
-            COLORS.DEEP_BLUE,
+            COLORS.INK,
             { align: 'center', weight: 850, maxWidth: c.UIWW * .72 }
         );
 
@@ -739,12 +796,13 @@ export class AeroLiveRenderer {
             this.#panel(rect, {
                 fill: COLORS.GLASS_FILL_STRONG,
                 stroke: accent,
-                edgeColor: accent,
+                edgeColor: COLORS.GLASS_HIGHLIGHT,
                 tintColor: accent,
-                tintStrength: .08,
-                shadowColor: accent,
-                shadowRadius: 10 + button.hoverValue * 12,
-                lineWidth: 2 + button.hoverValue * 2
+                tintStrength: .055,
+                edgeStrength: .18 + button.hoverValue * .06,
+                shadowColor: COLORS.GLASS_SHADOW,
+                shadowRadius: 4 + button.hoverValue * 3,
+                lineWidth: 1.4 + button.hoverValue * .8
             });
             const accentBar = { x: rect.x + rect.w * .07, y: rect.y + rect.h * .07, w: rect.w * .86, h: Math.max(7, rect.h * .055) };
             this.#drawContent({
@@ -757,14 +815,14 @@ export class AeroLiveRenderer {
                         { offset: 1, color: accent }
                     ]
                 },
-                shadowBlur: 8 + button.hoverValue * 10,
+                shadowBlur: button.hoverValue * 5,
                 shadowColor: accent
             });
             const numberRadius = Math.min(rect.w, rect.h) * .095;
             this.#drawContent({
                 shape: 'circle', x: rect.x + rect.w * .16, y: rect.y + rect.h * .28, radius: numberRadius,
                 fill: accent, stroke: COLORS.GLASS_BORDER, lineWidth: 1.4,
-                shadowBlur: 10 + button.hoverValue * 10, shadowColor: accent
+                shadowBlur: 1 + button.hoverValue * 4, shadowColor: accent
             });
             this.#drawContent({
                 shape: 'circle', x: rect.x + rect.w * .16 - numberRadius * .3, y: rect.y + rect.h * .28 - numberRadius * .32,
@@ -791,18 +849,19 @@ export class AeroLiveRenderer {
     #liveWindows() {
         const layout = this.context.layout;
         [
-            [layout.mainFrame, 'live-main', COLORS.AERO_PINK || COLORS.SKY_HAZE, .08],
-            [layout.chatFrame, 'live-chat', COLORS.AQUA, .1],
-            [layout.producerFrame, 'live-producer', COLORS.AERO_VIOLET || COLORS.SKY_HAZE, .09]
+            [layout.mainFrame, 'live-main', COLORS.AERO_PINK || COLORS.SKY_HAZE, .04],
+            [layout.chatFrame, 'live-chat', COLORS.AQUA, .05],
+            [layout.producerFrame, 'live-producer', COLORS.AERO_VIOLET || COLORS.SKY_HAZE, .045]
         ].forEach(([rect, role, tintColor, tintStrength]) => {
             this.#panel(rect, {
                 role,
-                fill: 'rgba(235,251,255,0.28)',
-                contentTint: 'rgba(245,254,255,0.06)',
+                fill: 'rgba(235,251,255,0.18)',
+                flatFill: 'rgba(235,251,255,0.34)',
+                contentTint: 'rgba(245,254,255,0.025)',
                 tintColor,
                 tintStrength,
-                alpha: .94,
-                shadowRadius: 20
+                alpha: .92,
+                shadowRadius: 9
             });
         });
     }
@@ -852,10 +911,6 @@ export class AeroLiveRenderer {
             ? titleRect.y + titleRect.h * .5
             : rect.y + c.layout.panelPad * .68;
         this.#label('프로듀서 콘솔', titleRect.x + c.layout.panelPad * .45, producerTitleY, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950 });
-        const producerStatusX = liveWindowLayout
-            ? titleRect.x + titleRect.w * .67
-            : titleRect.x + titleRect.w - c.layout.panelPad * .45;
-        this.#label(`강퇴 ${integer(c.snapshot?.resources?.kicksRemaining)}회`, producerStatusX, producerTitleY, this.#size(UI.SMALL_FONT_WH), COLORS.NEGATIVE, { align: 'right', baseline: 'middle', weight: 850, maxWidth: titleRect.w * .24 });
         if (liveWindowLayout) {
             this.#macWindowControls(c.layout.producerWindowControls);
         }
@@ -881,7 +936,14 @@ export class AeroLiveRenderer {
         const c = this.context;
         const d = c.snapshot?.activeDonation;
         const rect = c.layout.donationCard;
-        this.#panel(rect, { role: 'live-donation', fill: d ? 'rgba(255,214,90,0.22)' : COLORS.GLASS_FILL_STRONG, stroke: d ? COLORS.WARNING : COLORS.GLASS_BORDER, lineWidth: d ? 2.5 : 1.2 });
+        this.#panel(rect, {
+            role: 'live-donation',
+            fill: d ? 'rgba(255,214,90,0.2)' : COLORS.GLASS_FILL_STRONG,
+            stroke: d ? COLORS.WARNING : COLORS.GLASS_BORDER,
+            edgeStrength: d ? .22 : .12,
+            lineWidth: d ? 1.7 : 1,
+            shadowRadius: 0
+        });
         if (!d) {
             return;
         }
@@ -932,12 +994,15 @@ export class AeroLiveRenderer {
             this.#panel(stage, {
                 role: 'live-stage',
                 fill: 'rgba(7,35,59,0.18)',
-                stroke: COLORS.AQUA,
+                stroke: 'rgba(255,255,255,0.5)',
+                edgeColor: COLORS.GLASS_HIGHLIGHT,
                 tintColor: COLORS.AERO_PINK || COLORS.SKY_HAZE,
-                tintStrength: .055,
+                tintStrength: .04,
+                edgeStrength: .16,
                 alpha: .78,
-                shadowRadius: 8
+                shadowRadius: 0
             });
+            this.#drawLiveStageBackground(stage);
         } else {
             this.#panel(c.layout.center, { fill: COLORS.GLASS_FILL, alpha: .89, tintColor: COLORS.AERO_PINK || COLORS.SKY_HAZE, tintStrength: .07 });
             this.#drawContent({
@@ -947,8 +1012,8 @@ export class AeroLiveRenderer {
                 fill: 'rgba(255,255,255,0.14)',
                 stroke: COLORS.AQUA,
                 lineWidth: 2,
-                shadowBlur: 18,
-                shadowColor: 'rgba(66,224,208,0.35)'
+                shadowBlur: 5,
+                shadowColor: 'rgba(66,224,208,0.18)'
             });
             this.#drawContent({ shape: 'roundRect', ...stage, radius: this.#radius(), fill: heroImage ? COLORS.GLASS_WHITE : COLORS.DARK_GLASS });
         }
@@ -986,7 +1051,7 @@ export class AeroLiveRenderer {
                     ]
                 },
                 alpha: .84,
-                shadowBlur: 10,
+                shadowBlur: 2,
                 shadowColor: COLORS.AERO_PINK || '#FF86D7'
             });
         }
@@ -995,17 +1060,78 @@ export class AeroLiveRenderer {
         }
         this.#panel(dialogue, {
             role: 'live-dialogue',
-            fill: 'rgba(7,35,59,0.34)',
-            contentTint: 'rgba(5,30,51,0.7)',
-            stroke: COLORS.AQUA,
-            edgeColor: COLORS.AQUA,
-            lineWidth: 1.5
+            fill: 'rgba(7,35,59,0.3)',
+            contentTint: 'rgba(5,30,51,0.52)',
+            stroke: 'rgba(255,255,255,0.5)',
+            edgeColor: COLORS.GLASS_HIGHLIGHT,
+            edgeStrength: .14,
+            shadowRadius: 0,
+            lineWidth: 1.2
         });
         if (c.heroResponseText) {
             const responseLabel = c.heroResponseLabel || '실시간 답변';
             this.#label(responseLabel, dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .22, this.#size(UI.SMALL_FONT_WH), responseLabel === '채팅 답변' ? COLORS.AQUA : COLORS.WARNING, { baseline: 'middle', weight: 900 });
         }
         this.#wrapped(c.heroResponseText || beat.heroText || '방송 시작을 준비하고 있어요.', dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .4, dialogue.w * .89, this.#size(UI.DIALOGUE_FONT_WH), COLORS.GLASS_WHITE, 3);
+    }
+
+    /**
+     * 예전 fullscreen 합성에서 현재 stage가 차지하던 원본 영역만 잘라 복원합니다.
+     * ocean wallpaper와 외곽 glass 창은 그대로 두고 studio 내부만 2D content로 그립니다.
+     * @param {{x:number,y:number,w:number,h:number}} stage - 현재 히로인 무대 영역입니다.
+     * @returns {boolean} 배경을 그렸는지 여부입니다.
+     * @private
+     */
+    #drawLiveStageBackground(stage) {
+        const c = this.context;
+        const record = this.liveStageBackground;
+        const image = record?.ready ? record.image : null;
+        if (!image || !c || !stage) {
+            return false;
+        }
+
+        const sourceW = Math.max(1, number(image.naturalWidth || image.width, 1920));
+        const sourceH = Math.max(1, number(image.naturalHeight || image.height, 1080));
+        const viewportW = Math.max(1, number(c.UIWW, c.WW));
+        const viewportH = Math.max(1, number(c.WH));
+        const sourceX = clamp((stage.x - number(c.UIOffsetX)) / viewportW, 0, 1) * sourceW;
+        const sourceY = clamp(stage.y / viewportH, 0, 1) * sourceH;
+        const sourceWidth = Math.max(1, Math.min(
+            sourceW - sourceX,
+            clamp(stage.w / viewportW, 0, 1) * sourceW
+        ));
+        const sourceHeight = Math.max(1, Math.min(
+            sourceH - sourceY,
+            clamp(stage.h / viewportH, 0, 1) * sourceH
+        ));
+        const inset = Math.max(2, Math.min(this.#radius() * .42, stage.h * .012));
+        const target = {
+            x: stage.x + inset,
+            y: stage.y + inset,
+            w: Math.max(1, stage.w - inset * 2),
+            h: Math.max(1, stage.h - inset * 2)
+        };
+        this.#drawContent({
+            shape: 'image',
+            image,
+            sx: sourceX,
+            sy: sourceY,
+            sw: sourceWidth,
+            sh: sourceHeight,
+            ...target,
+            smoothing: true,
+            clipRect: target
+        });
+        this.#drawContent({
+            shape: 'roundRect',
+            ...target,
+            radius: Math.max(1, this.#radius() - inset),
+            fill: 'rgba(5,30,51,0.07)',
+            stroke: 'rgba(255,255,255,0.28)',
+            lineWidth: 1
+        });
+        this.liveStageBackgroundRenderedThisFrame = true;
+        return true;
     }
 
     /** 우상 창의 일반·핵심 채팅과 관리 버튼을 그립니다. @private */
@@ -1047,7 +1173,7 @@ export class AeroLiveRenderer {
                 visibleCount: count,
                 preferredLineHeight: c.WH * UI.CHAT_LINE_HEIGHT_WH / 100
             });
-        this.#drawContent({ shape: 'roundRect', ...rect, radius: this.#radius() * .7, fill: 'rgba(245,254,255,0.34)', stroke: COLORS.GLASS_BORDER, lineWidth: 1 });
+        this.#drawContent({ shape: 'roundRect', ...rect, radius: this.#radius() * .7, fill: 'rgba(245,254,255,0.27)', stroke: COLORS.GLASS_BORDER, lineWidth: 1 });
         if (!rows.length) {
             this.#label('시청자 채팅을 기다리는 중입니다.', rect.x + rect.w / 2, rect.y + rect.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'center', baseline: 'middle', weight: 700 });
             return;
@@ -1078,7 +1204,7 @@ export class AeroLiveRenderer {
                 fill: rowFill,
                 stroke: coreSelected ? COLORS.WARNING : coreActive ? COLORS.NEGATIVE : undefined,
                 lineWidth: coreSelected ? 2 : coreActive ? 1.35 : 0,
-                shadowBlur: coreSelected ? 8 : 0,
+                shadowBlur: coreSelected ? 4 : 0,
                 shadowColor: coreSelected ? COLORS.WARNING : undefined,
                 alpha: core && !coreActive && !coreSelected ? .66 : .9
             });
@@ -1124,7 +1250,7 @@ export class AeroLiveRenderer {
                 h: bar.h,
                 radius: 999,
                 fill: COLORS.NEGATIVE,
-                shadowBlur: 4,
+                shadowBlur: 2,
                 shadowColor: COLORS.NEGATIVE,
                 clipRect: row
             });
@@ -1312,13 +1438,13 @@ export class AeroLiveRenderer {
             fill: COLORS.GLASS_FILL_STRONG,
             stroke: COLORS.WARNING,
             edgeColor: COLORS.WARNING,
-            shadowColor: COLORS.WARNING,
-            shadowRadius: 24,
+            shadowColor: COLORS.GLASS_SHADOW,
+            shadowRadius: 8,
             contentOnly: true,
             lineWidth: 2.5
         });
         this.#label('방송을 조기 종료할까요?', rect.x + rect.w / 2, rect.y + rect.h * .2, this.#size(UI.SUBTITLE_FONT_WH) * 1.15, COLORS.INK, { align: 'center', weight: 950 });
-        this.#wrapped('현재 기록으로 결과를 확정하고 진행 중인 이벤트를 종료합니다.', rect.x + rect.w * .12, rect.y + rect.h * .36, rect.w * .76, this.#size(UI.BODY_FONT_WH), COLORS.INK_MUTED, 2, 'center');
+        this.#wrapped('현재 기록으로 결과를 확정하고 진행 중인 이벤트를 종료합니다.', rect.x + rect.w * .12, rect.y + rect.h * .36, rect.w * .76, this.#size(UI.BODY_FONT_WH), COLORS.INK, 2, 'center');
         this.#label('ESC 취소', rect.x + rect.w * .91, rect.y + rect.h * .075, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'right', weight: 750 });
         this.#button(c.modalCancelButton, '계속 방송', COLORS.GLASS_FILL_STRONG, COLORS.DEEP_BLUE, COLORS.DEEP_BLUE);
         this.#button(c.modalConfirmButton, '조기 종료', COLORS.NEGATIVE, COLORS.GLASS_BORDER, COLORS.GLASS_WHITE);
@@ -1369,7 +1495,7 @@ export class AeroLiveRenderer {
             const fillW = Math.max(bar.h, bar.w * percent / 100);
             this.#drawContent({
                 shape: 'roundRect', x: bar.x, y: bar.y, w: fillW, h: bar.h, radius: 999,
-                fill: color, shadowBlur: 8, shadowColor: color
+                fill: color, shadowBlur: 3, shadowColor: color
             });
             this.#drawContent({
                 shape: 'roundRect', x: bar.x + 1, y: bar.y + 1, w: Math.max(1, fillW - 2), h: Math.max(1, bar.h * .34), radius: 999,
@@ -1395,7 +1521,7 @@ export class AeroLiveRenderer {
             const fillW = Math.max(rect.h, rect.w * ratio);
             this.#drawContent({
                 shape: 'roundRect', x: rect.x, y: rect.y, w: fillW, h: rect.h, radius: 999,
-                fill: color, shadowBlur: 9, shadowColor: color
+                fill: color, shadowBlur: 3, shadowColor: color
             });
             this.#drawContent({
                 shape: 'roundRect', x: rect.x + 1, y: rect.y + 1, w: Math.max(1, fillW - 2), h: Math.max(1, rect.h * .3), radius: 999,
@@ -1409,9 +1535,9 @@ export class AeroLiveRenderer {
     #macWindowControls(layout, closeButton = null) {
         if (!layout || !Array.isArray(layout.buttons)) return;
         const styles = {
-            red: { top: '#FF8B85', middle: '#FF5F57', bottom: '#D93630', shadow: 'rgba(202,39,35,0.5)' },
-            yellow: { top: '#FFE37A', middle: '#FFBD2E', bottom: '#D99709', shadow: 'rgba(191,130,7,0.46)' },
-            green: { top: '#75E58D', middle: '#28C840', bottom: '#15992E', shadow: 'rgba(20,145,45,0.46)' }
+            red: { top: '#FF8B85', middle: '#FF5F57', bottom: '#D93630', shadow: 'rgba(202,39,35,0.3)' },
+            yellow: { top: '#FFE37A', middle: '#FFBD2E', bottom: '#D99709', shadow: 'rgba(191,130,7,0.27)' },
+            green: { top: '#75E58D', middle: '#28C840', bottom: '#15992E', shadow: 'rgba(20,145,45,0.27)' }
         };
         const closeHover = closeButton?.visible && !closeButton.aeroDisabled
             ? clamp(closeButton.hoverValue, 0, 1)
@@ -1439,7 +1565,7 @@ export class AeroLiveRenderer {
                 },
                 stroke: hover > 0 ? COLORS.GLASS_WHITE : 'rgba(74,55,48,0.34)',
                 lineWidth: Math.max(1, radius * .08),
-                shadowBlur: radius * (.42 + hover * .36),
+                shadowBlur: radius * (.24 + hover * .22),
                 shadowColor: style.shadow
             });
             this.#drawContent({
@@ -1463,9 +1589,9 @@ export class AeroLiveRenderer {
             shape: 'roundRect', ...rect, radius,
             fill: disabled ? COLORS.DARK_GLASS_SOFT : fill,
             stroke,
-            lineWidth: 1.5,
+            lineWidth: 1.25,
             alpha: disabled ? .45 : .96,
-            shadowBlur: disabled ? 0 : 4 + hover * 12,
+            shadowBlur: disabled ? 0 : hover * 6,
             shadowColor: stroke
         });
         if (!disabled) {
@@ -1479,11 +1605,11 @@ export class AeroLiveRenderer {
                 fill: {
                     type: 'linear', x1: 0, y1: rect.y, x2: 0, y2: rect.y + rect.h * .38,
                     stops: [
-                        { offset: 0, color: 'rgba(255,255,255,0.68)' },
+                        { offset: 0, color: 'rgba(255,255,255,0.52)' },
                         { offset: 1, color: 'rgba(255,255,255,0)' }
                     ]
                 },
-                alpha: .48 + hover * .22
+                alpha: .38 + hover * .14
             });
         }
         this.#label(label, rect.x + rect.w / 2, rect.y + rect.h / 2, Math.min(this.#size(UI.BODY_FONT_WH), rect.h * .34), textColor, { align: 'center', baseline: 'middle', weight: 900, maxWidth: rect.w * .9, alpha: disabled ? .55 : 1 });
@@ -1499,8 +1625,9 @@ export class AeroLiveRenderer {
         const radius = this.#radius();
         const alpha = style.alpha ?? .96;
         const fill = style.fill || COLORS.GLASS_FILL;
+        const flatFill = style.flatFill || fill;
         const stroke = style.stroke || COLORS.GLASS_BORDER;
-        const lineWidth = style.lineWidth || 1.2;
+        const lineWidth = style.lineWidth || 1;
         if (!style.contentOnly
             && this.wallpaperRenderedThisFrame
             && this.glassSession?.isGlassEnabled?.()) {
@@ -1527,7 +1654,7 @@ export class AeroLiveRenderer {
             });
         } else {
             this.#drawContent({
-                shape: 'roundRect', ...rect, radius, fill, stroke, lineWidth, alpha,
+                shape: 'roundRect', ...rect, radius, fill: flatFill, stroke, lineWidth, alpha,
                 shadowBlur: style.shadowRadius ?? GLASS_STYLE.SHADOW_RADIUS,
                 shadowColor: style.shadowColor || COLORS.GLASS_SHADOW
             });
@@ -1550,23 +1677,23 @@ export class AeroLiveRenderer {
             fill: false,
             stroke: style.innerStroke || COLORS.GLASS_INNER_EDGE || 'rgba(104,224,255,0.28)',
             lineWidth: 1,
-            alpha: alpha * .74
+            alpha: alpha * .44
         });
         this.#drawContent({
             shape: 'roundRect',
             x: rect.x + inset + 1,
             y: rect.y + inset + 1,
             w: Math.max(1, rect.w - (inset + 1) * 2),
-            h: Math.max(4, Math.min(rect.h * .17, 34)),
+            h: Math.max(4, Math.min(rect.h * .06, 14)),
             radius: Math.max(2, radius - inset - 1),
             fill: {
-                type: 'linear', x1: 0, y1: rect.y, x2: 0, y2: rect.y + Math.max(8, rect.h * .17),
+                type: 'linear', x1: 0, y1: rect.y, x2: 0, y2: rect.y + Math.max(6, rect.h * .06),
                 stops: [
                     { offset: 0, color: COLORS.GLASS_HIGHLIGHT || 'rgba(255,255,255,0.7)' },
                     { offset: 1, color: 'rgba(255,255,255,0)' }
                 ]
             },
-            alpha: alpha * .55
+            alpha: alpha * .3
         });
     }
 

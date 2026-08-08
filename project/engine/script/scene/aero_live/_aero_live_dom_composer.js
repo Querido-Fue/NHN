@@ -72,7 +72,7 @@ export class AeroLiveDomComposer {
             borderWidth: cssPixel(borderRenderPixels),
             borderRadius: cssPixel(viewportHeight * UI.PANEL_RADIUS_WH / 100),
             boxShadow: [
-                `0 ${cssPixel(viewportHeight * 0.012)} ${cssPixel(viewportHeight * 0.032)} ${COLORS.GLASS_SHADOW}`,
+                `0 ${cssPixel(viewportHeight * 0.006)} ${cssPixel(viewportHeight * 0.018)} ${COLORS.GLASS_SHADOW}`,
                 `inset 0 ${cssPixel(borderRenderPixels)} 0 ${COLORS.GLASS_HIGHLIGHT || COLORS.GLASS_BORDER}`,
                 `inset 0 -${cssPixel(borderRenderPixels)} 0 ${COLORS.GLASS_INNER_EDGE || COLORS.AQUA}`
             ].join(', ')
@@ -243,7 +243,7 @@ export class AeroLiveDomComposer {
             outline: 'none',
             color: COLORS.INK,
             background: 'linear-gradient(180deg, #79F5E7 0%, #42E0D0 55%, #33CDBF 100%)',
-            boxShadow: `inset 0 1px 0 ${COLORS.GLASS_HIGHLIGHT || COLORS.GLASS_WHITE}, 0 0 18px rgba(66,224,208,0.2)`,
+            boxShadow: `inset 0 1px 0 ${COLORS.GLASS_HIGHLIGHT || COLORS.GLASS_WHITE}, 0 0 6px rgba(66,224,208,0.12)`,
             fontWeight: '900',
             cursor: 'pointer'
         });

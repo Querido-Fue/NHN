@@ -19,6 +19,19 @@ const WALLPAPER_ASSET_SPECS = Object.freeze({
     waterMask: Object.freeze({ suffix: '/asset/image/aero_live/wallpaper/ocean_rings_water_mask.png', width: 960, height: 540 }),
     cursorMask: Object.freeze({ suffix: '/asset/image/aero_live/wallpaper/ocean_rings_cursor_mask.png', width: 512, height: 288 })
 });
+const LIVE_STAGE_BACKGROUND_ASSET_SPEC = Object.freeze({
+    suffix: '/asset/image/aero_live/broadcast_background_mac.png',
+    width: 1920,
+    height: 1080
+});
+const LIVE_STAGE_BACKGROUND_RENDER_EXPECTATIONS = Object.freeze({
+    nickname: false,
+    topics: false,
+    'opening-chats': true,
+    live: true,
+    'early-end-modal': true,
+    results: false
+});
 const errors = [];
 const warnings = [];
 const nodeRequire = window.require;
@@ -213,6 +226,22 @@ function numberOr(value, fallback) {
 /** 현재 Renderer의 직렬화 가능한 wallpaper 진단을 반환합니다. */
 function getWallpaperStatus(scene) {
     return scene.renderer?.getWallpaperEffectStatus?.() || null;
+}
+
+/** 현재 Renderer의 기존 방송 studio 배경 상태를 반환합니다. */
+function getLiveStageBackgroundStatus(scene) {
+    return scene.renderer?.getLiveStageBackgroundAssetStatus?.() || null;
+}
+
+/** 기존 방송 studio 배경의 canonical 경로·크기·현재 프레임 사용 여부를 검사합니다. */
+function isHealthyLiveStageBackgroundStatus(status, renderedThisFrame) {
+    const normalized = String(status?.src || '').replace(/\\/gu, '/').toLowerCase();
+    return status?.ready === true
+        && status?.failed === false
+        && status?.renderedThisFrame === renderedThisFrame
+        && status?.naturalWidth === LIVE_STAGE_BACKGROUND_ASSET_SPEC.width
+        && status?.naturalHeight === LIVE_STAGE_BACKGROUND_ASSET_SPEC.height
+        && normalized.endsWith(LIVE_STAGE_BACKGROUND_ASSET_SPEC.suffix);
 }
 
 /** 네 wallpaper asset 요청이 모두 성공 또는 실패로 정착했는지 검사합니다. */
@@ -608,6 +637,26 @@ function inspectNicknameComposer(scene) {
     );
 }
 
+/** 캡처 PNG에서 같은 영역을 찾을 수 있도록 hero stage를 viewport 정규화 좌표로 직렬화합니다. */
+function inspectLiveStageRoi(scene) {
+    const rect = scene.layout?.heroStage;
+    const width = numberOr(scene.WW, 0);
+    const height = numberOr(scene.WH, 0);
+    if (!rect || width <= 0 || height <= 0) {
+        return null;
+    }
+    const left = Math.max(0, Math.min(1, numberOr(rect.x, 0) / width));
+    const top = Math.max(0, Math.min(1, numberOr(rect.y, 0) / height));
+    const right = Math.max(left, Math.min(1, (numberOr(rect.x, 0) + numberOr(rect.w, 0)) / width));
+    const bottom = Math.max(top, Math.min(1, (numberOr(rect.y, 0) + numberOr(rect.h, 0)) / height));
+    return {
+        x: Number(left.toFixed(6)),
+        y: Number(top.toFixed(6)),
+        w: Number((right - left).toFixed(6)),
+        h: Number((bottom - top).toFixed(6))
+    };
+}
+
 /**
  * 완성된 리포트를 같은 디렉터리의 임시 파일에서 원자적으로 교체합니다.
  * @param {{reportPath:string}} paths - 검증된 출력 경로입니다.
@@ -654,6 +703,8 @@ async function captureState(state) {
         mode: state.scene.mode,
         status: state.scene.snapshot?.status || 'unknown',
         wallpaper: getWallpaperStatus(state.scene),
+        liveStageBackground: getLiveStageBackgroundStatus(state.scene),
+        liveStageRoi: inspectLiveStageRoi(state.scene),
         window: { width: window.innerWidth, height: window.innerHeight },
         composer: inspectComposer(state.scene),
         nicknameComposer: inspectNicknameComposer(state.scene),
@@ -684,8 +735,10 @@ async function runSmoke() {
             () => {
                 const heroStatus = scene.renderer?.getHeroAssetStatus?.();
                 const wallpaperStatus = getWallpaperStatus(scene);
+                const liveStageBackgroundStatus = getLiveStageBackgroundStatus(scene);
                 return (heroStatus?.ready || heroStatus?.failed)
-                    && areWallpaperAssetsSettled(wallpaperStatus);
+                    && areWallpaperAssetsSettled(wallpaperStatus)
+                    && (liveStageBackgroundStatus?.ready || liveStageBackgroundStatus?.failed);
             },
             'aero-live-images'
         );
@@ -900,6 +953,7 @@ async function runSmoke() {
 
         const wallpaperStability = runWallpaperStabilityProbe(game, scene);
         const wallpaperStatus = getWallpaperStatus(scene);
+        const liveStageBackgroundStatus = getLiveStageBackgroundStatus(scene);
         const aeroSurfaces = inspectAeroSurfaceLayers(game, scene);
         const canvasStates = [...document.querySelectorAll('canvas')].map((canvas) => ({
             id: canvas.id,
@@ -924,6 +978,7 @@ async function runSmoke() {
             },
             heroAssets: scene.renderer?.getHeroAssetStatus?.() || null,
             wallpaper: wallpaperStatus,
+            liveStageBackground: liveStageBackgroundStatus,
             wallpaperStability,
             aeroSurfaces,
             identity: {
@@ -966,6 +1021,15 @@ async function runSmoke() {
             && report.heroAssets?.failedCount === 0
             && isHealthyWallpaperStatus(report.wallpaper)
             && report.captures.every((capture) => isHealthyWallpaperStatus(capture.wallpaper))
+            && isHealthyLiveStageBackgroundStatus(report.liveStageBackground, false)
+            && report.captures.every((capture) => (
+                isHealthyLiveStageBackgroundStatus(
+                    capture.liveStageBackground,
+                    LIVE_STAGE_BACKGROUND_RENDER_EXPECTATIONS[capture.name]
+                )
+                && capture.liveStageRoi?.w > 0
+                && capture.liveStageRoi?.h > 0
+            ))
             && report.wallpaperStability.frames === WALLPAPER_STABILITY_FRAMES
             && report.wallpaperStability.afterFrameCount - report.wallpaperStability.beforeFrameCount
                 === WALLPAPER_STABILITY_FRAMES
