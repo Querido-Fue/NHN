@@ -255,6 +255,15 @@ export class DisplaySystem {
     }
 
     /**
+     * overlay effect surface의 진단 계측을 반환합니다.
+     * @param {string} surfaceId - 대상 effect surface 식별자입니다.
+     * @returns {object|null} WebGL 계측 스냅샷입니다.
+     */
+    getOverlayEffectMetrics(surfaceId) {
+        return this.webGLHandler.getLayerMetrics(surfaceId);
+    }
+
+    /**
      * 화면 크기 변경을 반영합니다.
      */
     resize() {
@@ -536,7 +545,7 @@ export const render = (layerName, options) => displaySystemInstance.drawHandler.
  */
 export const renderGL = (layerName, options) => {
     const targetLayer = resolveDisplayWebGLLayerName(layerName);
-    displaySystemInstance.webGLHandler.render(targetLayer, options);
+    return displaySystemInstance.webGLHandler.render(targetLayer, options);
 };
 
 /**

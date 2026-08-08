@@ -2,7 +2,7 @@ import { BaseScene } from 'scene/_base_scene.js';
 import { getData } from 'data/data_handler.js';
 import { getUIOffsetX, getUIWW, getWH, getWW } from 'display/display_system.js';
 import { getDelta } from 'engine/time_handler.js';
-import { getKeyboardCodeInput } from 'input/input_system.js';
+import { getKeyboardCodeInput, getMouseInput, isMousePressing } from 'input/input_system.js';
 import { UIPool, releaseUIItem } from 'ui/_ui_pool.js';
 import {
     AERO_LIVE_DEFAULT_TIMING,
@@ -365,6 +365,18 @@ export class AeroLiveScene extends BaseScene {
     }
 
     /**
+     * 실행 중 변경된 화면 설정을 AERO 전용 renderer와 overlay session에 반영합니다.
+     * @param {object} [changedSettings={}] - 변경된 런타임 설정입니다.
+     * @override
+     */
+    applyRuntimeSettings(changedSettings = {}) {
+        if (this.isDestroyed) {
+            return;
+        }
+        this.renderer?.applyRuntimeSettings?.(changedSettings);
+    }
+
+    /**
      * 비동기 요청, DOM 요소와 풀링 UI를 모두 정리합니다.
      * @override
      */
@@ -417,6 +429,8 @@ export class AeroLiveScene extends BaseScene {
             earlyEndModalOpen: this.earlyEndModalOpen,
             inputClassificationPending: this.inputClassificationPending,
             elapsedVisualSeconds: this.elapsedVisualSeconds,
+            deltaVisualSeconds: Math.max(0, finiteNumber(getDelta(), 0)),
+            wallpaperPointer: this.#getWallpaperPointer(),
             timerMaximums: this.timerMaximums,
             toastText: this.toastText,
             toastSecondsRemaining: this.toastSecondsRemaining,
@@ -427,6 +441,23 @@ export class AeroLiveScene extends BaseScene {
             aiStatus: this.aiService?.getStatus?.() || 'AI 준비',
             campaign: this.campaign?.getSnapshot?.() || null
         };
+    }
+
+    /**
+     * UI 입력을 소비하지 않고 wallpaper ripple용 현재 포인터를 관찰합니다.
+     * @returns {{x:number,y:number,leftDown:boolean}|null} 논리 화면 포인터입니다.
+     * @private
+     */
+    #getWallpaperPointer() {
+        try {
+            return {
+                x: finiteNumber(getMouseInput('x'), 0),
+                y: finiteNumber(getMouseInput('y'), 0),
+                leftDown: isMousePressing('left') === true
+            };
+        } catch {
+            return null;
+        }
     }
 
     /**
@@ -446,7 +477,7 @@ export class AeroLiveScene extends BaseScene {
         const contentX = this.UIOffsetX + safe;
         const contentW = Math.max(1, this.UIWW - (safe * 2));
         const panelPad = ux(UI.PANEL_PADDING_UIWW);
-        const liveLayout = AERO_CONSTANTS.ASSET.LIVE_BACKGROUND_LAYOUT || {};
+        const liveLayout = AERO_CONSTANTS.ASSET.LIVE_WINDOW_LAYOUT || {};
         const referenceWidth = Math.max(1, finiteNumber(liveLayout.REFERENCE_WIDTH, 3840));
         const referenceHeight = Math.max(1, finiteNumber(liveLayout.REFERENCE_HEIGHT, 2160));
         const mapLiveRect = (rect = {}) => ({

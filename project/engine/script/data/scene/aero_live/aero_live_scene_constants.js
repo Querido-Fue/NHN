@@ -3,8 +3,32 @@
  */
 export const AERO_LIVE_SCENE_CONSTANTS = Object.freeze({
     ASSET: Object.freeze({
-        LIVE_BACKGROUND_PATH: '../asset/image/aero_live/broadcast_background_mac.png',
-        LIVE_BACKGROUND_LAYOUT: Object.freeze({
+        WALLPAPER: Object.freeze({
+            BASE_PATH: '../asset/image/aero_live/wallpaper/ocean_rings_base.png',
+            NORMAL_PATH: '../asset/image/aero_live/wallpaper/ocean_rings_normal.png',
+            WATER_MASK_PATH: '../asset/image/aero_live/wallpaper/ocean_rings_water_mask.png',
+            CURSOR_MASK_PATH: '../asset/image/aero_live/wallpaper/ocean_rings_cursor_mask.png',
+            MAX_EFFECT_WIDTH: 1920,
+            MAX_EFFECT_HEIGHT: 1080,
+            BLUR_REFRESH_HZ: 10,
+            SIMULATION_WIDTH: 512,
+            SIMULATION_HEIGHT: 288,
+            WATER: Object.freeze({
+                ANIMATION_SPEED: 0.12,
+                RATIO: 1,
+                STRENGTH: 0.090000004,
+                SCALE: 1,
+                SCROLL_DIRECTION: 1.5296264,
+                SCROLL_SPEED: 0.079999998
+            }),
+            CURSOR: Object.freeze({
+                SCALE: 0.30000001,
+                SPEED: 0.5,
+                DECAY: 1,
+                STRENGTH: 0.5
+            })
+        }),
+        LIVE_WINDOW_LAYOUT: Object.freeze({
             REFERENCE_WIDTH: 3840,
             REFERENCE_HEIGHT: 2160,
             MAIN_FRAME: Object.freeze({ x: 82, y: 58, w: 2386, h: 2074 }),

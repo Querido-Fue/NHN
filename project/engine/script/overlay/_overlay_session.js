@@ -199,11 +199,47 @@ export class OverlaySession {
     }
 
     /**
+     * 같은 WebGL surface에서 glass보다 먼저 장면 전용 backdrop effect를 렌더링합니다.
+     * @param {object} options - backdrop effect 명령입니다.
+     * @returns {boolean} 이번 프레임에 backdrop이 렌더링되었는지 여부입니다.
+     */
+    renderBackdropEffect(options) {
+        if (this.closed || !this.effectLayerId || !options?.effectPass) {
+            return false;
+        }
+
+        return renderGL(this.effectLayerId, {
+            shape: 'backdropEffect',
+            ...options
+        }) === true;
+    }
+
+    /**
+     * 현재 설정에서 실제 backdrop glass 합성이 가능한지 반환합니다.
+     * wallpaper용 WebGL surface 존재 여부와 투명도 설정을 분리합니다.
+     * @returns {boolean} glass 사용 여부입니다.
+     */
+    isGlassEnabled() {
+        return !this.closed && this.effectiveTransparent && !!this.effectLayerId;
+    }
+
+    /**
+     * 현재 effect surface의 비밀정보 없는 진단 계측을 반환합니다.
+     * @returns {object|null} overlay WebGL 계측입니다.
+     */
+    getEffectMetrics() {
+        if (!this.effectLayerId) {
+            return null;
+        }
+        return this.displaySystem.getOverlayEffectMetrics?.(this.effectLayerId) || null;
+    }
+
+    /**
      * glass 패널을 effect surface에 렌더링합니다.
      * @param {object} options - 패널 렌더링 옵션입니다.
      */
     renderGlassPanel(options) {
-        if (!this.effectLayerId) {
+        if (!this.isGlassEnabled()) {
             return;
         }
 

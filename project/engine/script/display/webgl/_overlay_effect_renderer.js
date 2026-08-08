@@ -36,6 +36,7 @@ export class OverlayEffectRenderer {
         this.sceneTarget = null;
         this.downTargets = [];
         this.upTargets = [];
+        this.blurTargetsUnavailable = false;
         this.sourceTexture = null;
         this.panelTexture = null;
         this.panelTextureCache = new WeakMap();
@@ -44,9 +45,26 @@ export class OverlayEffectRenderer {
         this.emptyTexture = null;
         this.frameSerial = 0;
         this.lastBlurFrameSerial = -1;
+        this.frameBackdropSource = null;
+        this.backdropEffectPass = null;
+        this.contextLost = false;
+        this.resourceRevision = 1;
+        this.boundContextLost = (event) => this.#handleContextLost(event);
+        this.boundContextRestored = () => this.#handleContextRestored();
+        this.metrics = {
+            backdropFrames: 0,
+            glassPasses: 0,
+            blurRefreshes: 0,
+            blurSourceCount: 0,
+            canvasUploads: 0,
+            backdropFrameSerial: -1,
+            sampledBackdropFrameSerial: -1,
+            lastBackdropPassOrder: []
+        };
 
         this.#initPrograms();
         this.#initBuffers();
+        this.#attachContextLifecycle();
     }
 
     /**
@@ -64,6 +82,9 @@ export class OverlayEffectRenderer {
         this.width = nextWidth;
         this.height = nextHeight;
 
+        if (this.contextLost) {
+            return;
+        }
         this.#rebuildTargets();
         this.markBlurDirty();
     }
@@ -81,11 +102,17 @@ export class OverlayEffectRenderer {
      * @param {number} height - 현재 surface 높이입니다.
      */
     beginFrame(width, height) {
+        if (this.contextLost) {
+            this.width = Math.max(1, Math.floor(width));
+            this.height = Math.max(1, Math.floor(height));
+            return;
+        }
         this.resize(width, height);
         this.frameSerial += 1;
         if (this.frameSerial >= Number.MAX_SAFE_INTEGER) {
             this.frameSerial = 1;
         }
+        this.frameBackdropSource = null;
 
         this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
         this.gl.viewport(0, 0, this.width, this.height);
@@ -98,14 +125,43 @@ export class OverlayEffectRenderer {
      * @param {object} command - glass 패널 명령입니다.
      */
     render(command) {
-        if (!command || command.shape !== 'glassPanel' || this.width <= 0 || this.height <= 0) {
-            return;
+        if (this.contextLost || !command || this.width <= 0 || this.height <= 0) {
+            return false;
+        }
+
+        if (command.shape === 'backdropEffect') {
+            return this.#renderBackdropEffect(command);
+        }
+
+        if (command.shape !== 'glassPanel') {
+            return false;
         }
 
         if (command.sampleBackdrop !== false) {
             this.#ensureBlurTexture(command);
         }
-        this.#drawGlassPanel(command);
+        if (!this.#drawGlassPanel(command)) {
+            return false;
+        }
+        this.metrics.glassPasses += 1;
+        return true;
+    }
+
+    /**
+     * overlay effect surface의 비밀정보 없는 성능·순서 계측을 반환합니다.
+     * @returns {object} 계측 스냅샷입니다.
+     */
+    getMetrics() {
+        return {
+            ...this.metrics,
+            frameSerial: this.frameSerial,
+            hasGpuBackdropSource: !!this.frameBackdropSource,
+            blurDirty: this.blurDirty,
+            lastBlurRevision: this.lastBlurRevision,
+            lastBlurFrameSerial: this.lastBlurFrameSerial,
+            contextLost: this.contextLost,
+            resourceRevision: this.resourceRevision
+        };
     }
 
     /**
@@ -113,11 +169,14 @@ export class OverlayEffectRenderer {
      */
     destroy() {
         const gl = this.gl;
+        this.#detachContextLifecycle();
 
         this.#destroyTargets(this.downTargets);
         this.#destroyTargets(this.upTargets);
         this.downTargets = [];
         this.upTargets = [];
+        this.blurTargetsUnavailable = false;
+        this.finalBlurTexture = null;
 
         if (this.sceneTarget) {
             this.#destroyTargets([this.sceneTarget]);
@@ -166,6 +225,62 @@ export class OverlayEffectRenderer {
         this.#deleteProgramInfo(this.shadowProgram);
         this.#deleteProgramInfo(this.panelTextureProgram);
         this.#deleteProgramInfo(this.glassProgram);
+        this.backdropEffectPass = null;
+    }
+
+    /** WebGL context loss/restore listener를 연결합니다. @private */
+    #attachContextLifecycle() {
+        const canvas = this.gl?.canvas;
+        if (!canvas || typeof canvas.addEventListener !== 'function') {
+            return;
+        }
+        canvas.addEventListener('webglcontextlost', this.boundContextLost, false);
+        canvas.addEventListener('webglcontextrestored', this.boundContextRestored, false);
+    }
+
+    /** WebGL context listener를 해제합니다. @private */
+    #detachContextLifecycle() {
+        const canvas = this.gl?.canvas;
+        if (!canvas || typeof canvas.removeEventListener !== 'function') {
+            return;
+        }
+        canvas.removeEventListener('webglcontextlost', this.boundContextLost, false);
+        canvas.removeEventListener('webglcontextrestored', this.boundContextRestored, false);
+    }
+
+    /** context loss 동안 GL 호출을 멈추고 복구 시점을 기록합니다. @private */
+    #handleContextLost(event) {
+        event?.preventDefault?.();
+        this.contextLost = true;
+        this.frameBackdropSource = null;
+        this.blurDirty = true;
+        this.backdropEffectPass?.handleContextLost?.();
+    }
+
+    /** 복구된 context에서 core overlay 자원을 다시 만들고 blur를 무효화합니다. @private */
+    #handleContextRestored() {
+        this.contextLost = false;
+        this.sceneTarget = null;
+        this.sceneTexture = null;
+        this.downTargets = [];
+        this.upTargets = [];
+        this.blurTargetsUnavailable = false;
+        this.sourceTexture = null;
+        this.panelTextureCache = new WeakMap();
+        this.panelTextureRecords = new Set();
+        this.panelTexture = null;
+        this.activePanelTexture = null;
+        this.emptyTexture = null;
+        this.finalBlurTexture = null;
+        this.#initPrograms();
+        this.#initBuffers();
+        if (this.width > 0 && this.height > 0) {
+            this.#rebuildTargets();
+        }
+        this.resourceRevision += 1;
+        this.blurDirty = true;
+        this.lastBlurRevision = -1;
+        this.backdropEffectPass?.handleContextRestored?.();
     }
 
     /**
@@ -259,6 +374,81 @@ export class OverlayEffectRenderer {
     }
 
     /**
+     * 장면 전용 effect pass를 기존 scene target에 그리고 즉시 화면에 표시합니다.
+     * @param {object} command - backdrop effect 명령입니다.
+     * @returns {boolean} 렌더 성공 여부입니다.
+     * @private
+     */
+    #renderBackdropEffect(command) {
+        const pass = command.effectPass;
+        if (!pass || typeof pass.render !== 'function' || !this.sceneTarget || !this.sceneTexture) {
+            return false;
+        }
+
+        this.backdropEffectPass = pass;
+        let result = false;
+        try {
+            result = pass.render({
+                gl: this.gl,
+                target: this.sceneTarget,
+                width: this.width,
+                height: this.height,
+                elapsedSeconds: command.elapsedSeconds,
+                deltaSeconds: command.deltaSeconds,
+                pointer: command.pointer,
+                viewport: command.viewport
+            });
+        } catch {
+            return false;
+        }
+
+        const rendered = result === true || result?.rendered === true;
+        if (!rendered) {
+            return false;
+        }
+
+        this.frameBackdropSource = {
+            texture: this.sceneTexture,
+            width: this.width,
+            height: this.height,
+            revision: command.revision,
+            frameSerial: this.frameSerial
+        };
+        this.#drawBackdropTexture(this.sceneTexture);
+        this.metrics.backdropFrames += 1;
+        this.metrics.backdropFrameSerial = this.frameSerial;
+        this.metrics.lastBackdropPassOrder = [
+            ...(Array.isArray(result?.internalPassOrder) ? result.internalPassOrder : []),
+            'blit'
+        ];
+        return true;
+    }
+
+    /**
+     * scene target의 완성된 배경을 같은 WebGL surface의 기본 framebuffer에 복사합니다.
+     * @param {WebGLTexture} texture - 완성된 배경 텍스처입니다.
+     * @private
+     */
+    #drawBackdropTexture(texture) {
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, this.width, this.height);
+        gl.disable(gl.BLEND);
+        gl.useProgram(this.compositeProgram.program);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.fullscreenBuffer);
+        gl.enableVertexAttribArray(this.compositeProgram.attributes.a_position);
+        gl.vertexAttribPointer(this.compositeProgram.attributes.a_position, 2, gl.FLOAT, false, 0, 0);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(this.compositeProgram.uniforms.u_texture, 0);
+        gl.uniform1f(this.compositeProgram.uniforms.u_opacity, 1);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        gl.flush?.();
+    }
+
+    /**
      * @private
      * blur texture를 최신 상태로 맞춥니다.
      * @param {object} command - 현재 glass 패널 명령입니다.
@@ -278,16 +468,22 @@ export class OverlayEffectRenderer {
             return;
         }
 
-        const sources = typeof command.sourceProvider === 'function'
-            ? command.sourceProvider()
-            : [];
-
-        this.#captureSources(sources);
+        if (this.frameBackdropSource?.texture) {
+            this.metrics.blurSourceCount = 1;
+            this.metrics.sampledBackdropFrameSerial = this.frameBackdropSource.frameSerial;
+        } else {
+            const sources = typeof command.sourceProvider === 'function'
+                ? command.sourceProvider()
+                : [];
+            this.#captureSources(sources);
+            this.metrics.sampledBackdropFrameSerial = -1;
+        }
         this.#runKawaseBlur(command);
 
         this.lastBlurRevision = blurRevision;
         this.lastBlurFrameSerial = this.frameSerial;
         this.blurDirty = false;
+        this.metrics.blurRefreshes += 1;
     }
 
     /**
@@ -307,6 +503,7 @@ export class OverlayEffectRenderer {
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        this.metrics.blurSourceCount = Array.isArray(sources) ? sources.length : 0;
 
         for (const source of sources) {
             if (!source) {
@@ -325,8 +522,9 @@ export class OverlayEffectRenderer {
                 continue;
             }
 
-            this.#uploadSourceCanvas(source.canvas);
-            this.#drawCompositeTexturePass(clamp01(source.opacity === undefined ? 1 : source.opacity));
+            if (this.#uploadSourceCanvas(source.canvas)) {
+                this.#drawCompositeTexturePass(clamp01(source.opacity === undefined ? 1 : source.opacity));
+            }
         }
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -340,8 +538,20 @@ export class OverlayEffectRenderer {
      */
     #runKawaseBlur(command) {
         const gl = this.gl;
+        if (!this.sceneTexture) {
+            this.finalBlurTexture = null;
+            return;
+        }
+        if (!Number.isFinite(command.blur) || command.blur <= 0) {
+            this.finalBlurTexture = this.sceneTexture;
+            return;
+        }
+        if (!this.#ensureBlurTargets()) {
+            this.finalBlurTexture = this.sceneTexture;
+            return;
+        }
         const passCount = this.downTargets.length;
-        if (passCount <= 0 || !Number.isFinite(command.blur) || command.blur <= 0) {
+        if (passCount <= 0) {
             this.finalBlurTexture = this.sceneTexture;
             return;
         }
@@ -371,7 +581,7 @@ export class OverlayEffectRenderer {
         let currentWidth = readWidth;
         let currentHeight = readHeight;
 
-        for (let index = this.upTargets.length - 1; index >= 0; index--) {
+        for (let index = 0; index < this.upTargets.length; index++) {
             const target = this.upTargets[index];
             this.#drawFullscreenPass({
                 programInfo: this.upsampleProgram,
@@ -462,11 +672,15 @@ export class OverlayEffectRenderer {
      * @private
      * 현재 source canvas를 재사용 텍스처에 업로드합니다.
      * @param {HTMLCanvasElement} canvas - 업로드할 캔버스입니다.
+     * @returns {boolean} 업로드 성공 여부입니다.
      */
     #uploadSourceCanvas(canvas) {
         const gl = this.gl;
         if (!this.sourceTexture) {
             this.sourceTexture = this.#createTexture(Math.max(1, canvas.width), Math.max(1, canvas.height));
+        }
+        if (!this.sourceTexture) {
+            return false;
         }
 
         gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
@@ -475,19 +689,27 @@ export class OverlayEffectRenderer {
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        this.metrics.canvasUploads += 1;
+        return true;
     }
 
     /**
      * @private
      * 패널 effect용 오프스크린 캔버스를 텍스처로 업로드합니다.
      * @param {HTMLCanvasElement} canvas - 업로드할 effect 캔버스입니다.
+     * @returns {boolean} 업로드 성공 여부입니다.
      */
     #uploadPanelTexture(canvas) {
         const gl = this.gl;
         let record = this.panelTextureCache.get(canvas);
         if (!record) {
+            const texture = this.#createTexture(Math.max(1, canvas.width), Math.max(1, canvas.height));
+            if (!texture) {
+                this.activePanelTexture = null;
+                return false;
+            }
             record = {
-                texture: this.#createTexture(Math.max(1, canvas.width), Math.max(1, canvas.height)),
+                texture,
                 width: 0,
                 height: 0,
                 revision: Number.NaN
@@ -507,7 +729,7 @@ export class OverlayEffectRenderer {
         gl.bindTexture(gl.TEXTURE_2D, record.texture);
         if (!needsUpload) {
             this.activePanelTexture = record.texture;
-            return;
+            return true;
         }
 
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
@@ -519,15 +741,23 @@ export class OverlayEffectRenderer {
         record.height = canvas.height;
         record.revision = revision;
         this.activePanelTexture = record.texture;
+        return true;
     }
 
     /**
      * @private
      * glass 패널을 렌더링합니다.
      * @param {object} command - 렌더링 명령입니다.
+     * @returns {boolean} 패널 draw 성공 여부입니다.
      */
     #drawGlassPanel(command) {
         const gl = this.gl;
+        const backdropTexture = command.sampleBackdrop === false
+            ? this.#getEmptyTexture()
+            : (this.finalBlurTexture || this.sceneTexture || this.#getEmptyTexture());
+        if (!backdropTexture) {
+            return false;
+        }
         const panelRect = this.#buildPanelRect(command);
         const alpha = command.alpha === undefined ? 1 : command.alpha;
         const radius = Math.max(0, command.radius || 0);
@@ -591,9 +821,6 @@ export class OverlayEffectRenderer {
             command.refractionStrength === undefined ? OVERLAY_RENDER_CONSTANTS.GLASS_REFRACTION_STRENGTH : command.refractionStrength
         );
 
-        const backdropTexture = command.sampleBackdrop === false
-            ? this.#getEmptyTexture()
-            : (this.finalBlurTexture || this.sceneTexture);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, backdropTexture);
         gl.uniform1i(this.glassProgram.uniforms.u_blurTexture, 0);
@@ -609,6 +836,7 @@ export class OverlayEffectRenderer {
                 transformMatrix
             });
         }
+        return true;
     }
 
     /**
@@ -636,10 +864,13 @@ export class OverlayEffectRenderer {
      * @private
      * 패널 내부 effect 텍스처를 현재 패널 변형과 함께 합성합니다.
      * @param {object} options - 텍스처 합성 옵션입니다.
+     * @returns {boolean} 텍스처 draw 성공 여부입니다.
      */
     #drawPanelTexture(options) {
         const gl = this.gl;
-        this.#uploadPanelTexture(options.canvas);
+        if (!this.#uploadPanelTexture(options.canvas)) {
+            return false;
+        }
 
         gl.useProgram(this.panelTextureProgram.program);
         gl.bindBuffer(gl.ARRAY_BUFFER, this.unitQuadBuffer);
@@ -658,12 +889,13 @@ export class OverlayEffectRenderer {
         gl.bindTexture(gl.TEXTURE_2D, this.activePanelTexture);
         gl.uniform1i(this.panelTextureProgram.uniforms.u_texture, 0);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        return true;
     }
 
     /**
      * @private
      * backdrop 샘플링을 비활성화할 때 사용할 투명 텍스처를 반환합니다.
-     * @returns {WebGLTexture} 1x1 투명 텍스처입니다.
+     * @returns {WebGLTexture|null} 1x1 투명 텍스처 또는 할당 실패 시 null입니다.
      */
     #getEmptyTexture() {
         if (this.emptyTexture) {
@@ -672,6 +904,9 @@ export class OverlayEffectRenderer {
 
         const gl = this.gl;
         this.emptyTexture = gl.createTexture();
+        if (!this.emptyTexture) {
+            return null;
+        }
         gl.bindTexture(gl.TEXTURE_2D, this.emptyTexture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -755,7 +990,17 @@ export class OverlayEffectRenderer {
         const gl = this.gl;
         const vertexShader = compileShader(gl, vertexSource, gl.VERTEX_SHADER);
         const fragmentShader = compileShader(gl, fragmentSource, gl.FRAGMENT_SHADER);
+        if (!vertexShader || !fragmentShader) {
+            if (vertexShader) gl.deleteShader?.(vertexShader);
+            if (fragmentShader) gl.deleteShader?.(fragmentShader);
+            throw new Error('Overlay effect shader compilation failed.');
+        }
         const program = createProgram(gl, vertexShader, fragmentShader);
+        gl.deleteShader?.(vertexShader);
+        gl.deleteShader?.(fragmentShader);
+        if (!program) {
+            throw new Error('Overlay effect shader link failed.');
+        }
 
         const uniforms = {};
         for (const uniformName of uniformNames) {
@@ -780,16 +1025,36 @@ export class OverlayEffectRenderer {
         this.#destroyTargets(this.upTargets);
         this.downTargets = [];
         this.upTargets = [];
+        this.blurTargetsUnavailable = false;
+        this.finalBlurTexture = null;
 
         if (this.sceneTarget) {
             this.#destroyTargets([this.sceneTarget]);
             this.sceneTarget = null;
         }
         this.sceneTarget = this.#createRenderTarget(this.width, this.height);
-        this.sceneTexture = this.sceneTarget.texture;
+        this.sceneTexture = this.sceneTarget?.texture || null;
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    /**
+     * 실제 glass가 처음 필요할 때만 Kawase down/up target을 지연 생성합니다.
+     * @returns {boolean} 전체 blur target 체인이 준비되었는지 여부입니다.
+     * @private
+     */
+    #ensureBlurTargets() {
+        if (this.downTargets.length > 0) {
+            return true;
+        }
+        if (this.blurTargetsUnavailable || !this.sceneTexture || this.width <= 0 || this.height <= 0) {
+            return false;
+        }
 
         let levelWidth = this.width;
         let levelHeight = this.height;
+        const downTargets = [];
+        const upTargets = [];
         const maxPasses = Math.min(
             OVERLAY_RENDER_CONSTANTS.KAWASE_DEFAULT_DOWN_PASSES,
             OVERLAY_RENDER_CONSTANTS.KAWASE_DEFAULT_UP_PASSES
@@ -799,14 +1064,30 @@ export class OverlayEffectRenderer {
             levelWidth = Math.max(OVERLAY_RENDER_CONSTANTS.KAWASE_MIN_SIZE, Math.floor(levelWidth * 0.5));
             levelHeight = Math.max(OVERLAY_RENDER_CONSTANTS.KAWASE_MIN_SIZE, Math.floor(levelHeight * 0.5));
 
-            this.downTargets.push(this.#createRenderTarget(levelWidth, levelHeight));
+            const target = this.#createRenderTarget(levelWidth, levelHeight);
+            if (!target) {
+                this.#destroyTargets(downTargets);
+                this.blurTargetsUnavailable = true;
+                return false;
+            }
+            downTargets.push(target);
         }
 
-        for (let passIndex = this.downTargets.length - 2; passIndex >= 0; passIndex--) {
-            this.upTargets.push(this.#createRenderTarget(this.downTargets[passIndex].width, this.downTargets[passIndex].height));
+        for (let passIndex = downTargets.length - 2; passIndex >= 0; passIndex--) {
+            const sourceTarget = downTargets[passIndex];
+            const target = this.#createRenderTarget(sourceTarget.width, sourceTarget.height);
+            if (!target) {
+                this.#destroyTargets(downTargets);
+                this.#destroyTargets(upTargets);
+                this.blurTargetsUnavailable = true;
+                return false;
+            }
+            upTargets.push(target);
         }
-
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        this.downTargets = downTargets;
+        this.upTargets = upTargets;
+        this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+        return true;
     }
 
     /**
@@ -817,6 +1098,9 @@ export class OverlayEffectRenderer {
     #destroyTargets(targets) {
         const gl = this.gl;
         for (const target of targets) {
+            if (!target) {
+                continue;
+            }
             if (target.texture) {
                 gl.deleteTexture(target.texture);
             }
@@ -842,17 +1126,32 @@ export class OverlayEffectRenderer {
      * 텍스처 하나를 생성합니다.
      * @param {number} width - 텍스처 너비입니다.
      * @param {number} height - 텍스처 높이입니다.
-     * @returns {WebGLTexture} 생성된 텍스처입니다.
+     * @returns {WebGLTexture|null} 생성된 텍스처 또는 할당 실패 시 null입니다.
      */
     #createTexture(width, height) {
         const gl = this.gl;
+        const textureWidth = Math.max(1, Math.floor(Number(width) || 1));
+        const textureHeight = Math.max(1, Math.floor(Number(height) || 1));
+        let maxTextureSize = 0;
+        try {
+            maxTextureSize = Number(gl.getParameter(gl.MAX_TEXTURE_SIZE)) || 0;
+        } catch {
+            maxTextureSize = 0;
+        }
+        if (maxTextureSize > 0
+            && (textureWidth > maxTextureSize || textureHeight > maxTextureSize)) {
+            return null;
+        }
         const texture = gl.createTexture();
+        if (!texture) {
+            return null;
+        }
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, Math.max(1, width), Math.max(1, height), 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, textureWidth, textureHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
         return texture;
     }
 
@@ -861,16 +1160,32 @@ export class OverlayEffectRenderer {
      * 렌더 타깃 하나를 생성합니다.
      * @param {number} width - 너비입니다.
      * @param {number} height - 높이입니다.
-     * @returns {{texture: WebGLTexture, framebuffer: WebGLFramebuffer, width: number, height: number}}
+     * @returns {{texture: WebGLTexture, framebuffer: WebGLFramebuffer, width: number, height: number}|null}
      */
     #createRenderTarget(width, height) {
         const gl = this.gl;
-        const texture = this.#createTexture(width, height);
+        const targetWidth = Math.max(1, Math.floor(Number(width) || 1));
+        const targetHeight = Math.max(1, Math.floor(Number(height) || 1));
+        const texture = this.#createTexture(targetWidth, targetHeight);
+        if (!texture) {
+            return null;
+        }
         const framebuffer = gl.createFramebuffer();
+        if (!framebuffer) {
+            gl.deleteTexture(texture);
+            return null;
+        }
         gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+        const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        if (status !== gl.FRAMEBUFFER_COMPLETE) {
+            gl.deleteFramebuffer(framebuffer);
+            gl.deleteTexture(texture);
+            return null;
+        }
 
-        return { texture, framebuffer, width, height };
+        return { texture, framebuffer, width: targetWidth, height: targetHeight };
     }
 
     /**

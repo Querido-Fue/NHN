@@ -12,6 +12,13 @@ const MODEL_PLAYER_MESSAGE = '{playerName} 최고야';
 const MODEL_HERO_REPLY = '{playerName}님 고마워!';
 const MODEL_CALLBACK_TEXT = '아까 {playerName} 말 좋았어';
 const MODEL_REACTION_TEXT = '{playerName} 응원 좋다';
+const WALLPAPER_STABILITY_FRAMES = 30;
+const WALLPAPER_ASSET_SPECS = Object.freeze({
+    base: Object.freeze({ suffix: '/asset/image/aero_live/wallpaper/ocean_rings_base.png', width: 1920, height: 1080 }),
+    normal: Object.freeze({ suffix: '/asset/image/aero_live/wallpaper/ocean_rings_normal.png', width: 256, height: 256 }),
+    waterMask: Object.freeze({ suffix: '/asset/image/aero_live/wallpaper/ocean_rings_water_mask.png', width: 960, height: 540 }),
+    cursorMask: Object.freeze({ suffix: '/asset/image/aero_live/wallpaper/ocean_rings_cursor_mask.png', width: 512, height: 288 })
+});
 const errors = [];
 const warnings = [];
 const nodeRequire = window.require;
@@ -201,6 +208,132 @@ function getDisplayScaleFactor() {
 function numberOr(value, fallback) {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+/** 현재 Renderer의 직렬화 가능한 wallpaper 진단을 반환합니다. */
+function getWallpaperStatus(scene) {
+    return scene.renderer?.getWallpaperEffectStatus?.() || null;
+}
+
+/** 네 wallpaper asset 요청이 모두 성공 또는 실패로 정착했는지 검사합니다. */
+function areWallpaperAssetsSettled(status) {
+    return Array.isArray(status?.assets)
+        && status.assets.length === Object.keys(WALLPAPER_ASSET_SPECS).length
+        && status.assets.every((asset) => asset?.ready === true || asset?.failed === true);
+}
+
+/** full ripple pipeline과 같은 프레임 glass source 계약이 정상인지 검사합니다. */
+function isHealthyWallpaperStatus(status) {
+    if (!status
+        || status.ready !== true
+        || status.failed === true
+        || status.mode !== 'full'
+        || status.contextLost === true
+        || ![1, 2].includes(status.webglVersion)
+        || status.simulation?.width !== 512
+        || status.simulation?.height !== 288
+        || status.simulation?.format !== 'rgba8'
+        || numberOr(status.simulation?.lastStepSeconds, 1) > (1 / 30) + 1e-6
+        || status.lastGlError !== 0
+        || status.blur?.sourceCount !== 1
+        || status.blur?.canvasUploads !== 0
+        || status.blur?.backdropFrameSerial < 0
+        || status.blur?.sampledBackdropFrameSerial < 0
+        || status.blur?.sampledBackdropFrameSerial > status.blur?.backdropFrameSerial) {
+        return false;
+    }
+    const expectedOrder = ['apply', 'simulate', 'water', 'combine', 'blit'];
+    const internalOrder = ['apply', 'simulate', 'water', 'combine'];
+    if (JSON.stringify(status.passes?.expectedOrder) !== JSON.stringify(expectedOrder)
+        || JSON.stringify(status.passes?.lastInternalOrder) !== JSON.stringify(internalOrder)
+        || status.passes?.requiresCallerBlit !== true) {
+        return false;
+    }
+    for (const key of ['sharedVertex', 'copy', 'apply', 'simulate', 'water', 'combine']) {
+        if (status.shaders?.[key]?.compiled !== true) return false;
+        if (key !== 'sharedVertex' && status.shaders?.[key]?.linked !== true) return false;
+    }
+    for (const [key, width, height] of [
+        ['simulationA', 512, 288],
+        ['simulationB', 512, 288]
+    ]) {
+        const framebuffer = status.framebuffers?.[key];
+        if (framebuffer?.complete !== true
+            || framebuffer.width !== width
+            || framebuffer.height !== height
+            || framebuffer.format !== 'rgba8') {
+            return false;
+        }
+    }
+    const water = status.framebuffers?.water;
+    if (water?.complete !== true || water.width <= 0 || water.height <= 0 || water.format !== 'rgba8') {
+        return false;
+    }
+    return Object.entries(WALLPAPER_ASSET_SPECS).every(([key, expected]) => {
+        const asset = status.assets.find((candidate) => candidate?.key === key);
+        const normalized = String(asset?.src || '').replace(/\\/gu, '/').toLowerCase();
+        return asset?.ready === true
+            && asset?.failed === false
+            && asset.naturalWidth === expected.width
+            && asset.naturalHeight === expected.height
+            && normalized.endsWith(expected.suffix);
+    });
+}
+
+/** 같은 결과 화면을 반복 렌더해 pass/Canvas 자원 생성이 안정적인지 측정합니다. */
+function runWallpaperStabilityProbe(game, scene) {
+    const displaySystem = game.systemHandler?.displaySystem;
+    scene.elapsedVisualSeconds = numberOr(scene.elapsedVisualSeconds, 0) + 0.11;
+    renderNow(game, scene);
+    const compositeStatus = getWallpaperStatus(scene);
+    const beforeStatus = getWallpaperStatus(scene);
+    const beforeAllocations = structuredClone(beforeStatus?.metrics?.resourceAllocations || null);
+    const beforePool = structuredClone(displaySystem?.getCanvasPoolStats?.() || null);
+    const startedAt = performance.now();
+    for (let index = 0; index < WALLPAPER_STABILITY_FRAMES; index += 1) {
+        renderNow(game, scene);
+    }
+    const elapsedMs = performance.now() - startedAt;
+    const afterStatus = getWallpaperStatus(scene);
+    const afterAllocations = structuredClone(afterStatus?.metrics?.resourceAllocations || null);
+    const afterPool = structuredClone(displaySystem?.getCanvasPoolStats?.() || null);
+    return {
+        frames: WALLPAPER_STABILITY_FRAMES,
+        elapsedMs: Number(elapsedMs.toFixed(3)),
+        meanSubmitMs: Number((elapsedMs / WALLPAPER_STABILITY_FRAMES).toFixed(3)),
+        beforeFrameCount: beforeStatus?.simulation?.frameCount || 0,
+        afterFrameCount: afterStatus?.simulation?.frameCount || 0,
+        sameFrameComposite: compositeStatus?.blur?.backdropFrameSerial >= 0
+            && compositeStatus.blur.sampledBackdropFrameSerial === compositeStatus.blur.backdropFrameSerial,
+        beforeAllocations,
+        afterAllocations,
+        allocationsStable: JSON.stringify(beforeAllocations) === JSON.stringify(afterAllocations),
+        beforePool,
+        afterPool,
+        poolStable: JSON.stringify(beforePool) === JSON.stringify(afterPool)
+    };
+}
+
+/** AERO가 소유한 OverlaySession surface만 전역 pool과 분리해 직렬화합니다. */
+function inspectAeroSurfaceLayers(game, scene) {
+    const displaySystem = game.systemHandler?.displaySystem;
+    const layerIds = scene.renderer?.glassSession?.getLayerIds?.() || null;
+    const inspect = (surfaceId) => {
+        const descriptor = surfaceId ? displaySystem?.getSurface?.(surfaceId) : null;
+        return descriptor ? {
+            id: descriptor.id,
+            type: descriptor.type,
+            mode: descriptor.mode,
+            dynamic: descriptor.dynamic === true,
+            order: descriptor.order
+        } : null;
+    };
+    return {
+        layerIds,
+        dim: inspect(layerIds?.dimLayerId),
+        effect: inspect(layerIds?.effectLayerId),
+        ui: inspect(layerIds?.uiLayerId)
+    };
 }
 
 /**
@@ -520,7 +653,7 @@ async function captureState(state) {
         fileName,
         mode: state.scene.mode,
         status: state.scene.snapshot?.status || 'unknown',
-        liveBackdrop: state.scene.renderer?.getLiveBackdropAssetStatus?.() || null,
+        wallpaper: getWallpaperStatus(state.scene),
         window: { width: window.innerWidth, height: window.innerHeight },
         composer: inspectComposer(state.scene),
         nicknameComposer: inspectNicknameComposer(state.scene),
@@ -550,9 +683,9 @@ async function runSmoke() {
         await waitFor(
             () => {
                 const heroStatus = scene.renderer?.getHeroAssetStatus?.();
-                const backdropStatus = scene.renderer?.getLiveBackdropAssetStatus?.();
+                const wallpaperStatus = getWallpaperStatus(scene);
                 return (heroStatus?.ready || heroStatus?.failed)
-                    && (backdropStatus?.ready || backdropStatus?.failed);
+                    && areWallpaperAssetsSettled(wallpaperStatus);
             },
             'aero-live-images'
         );
@@ -765,6 +898,9 @@ async function runSmoke() {
                 .every((value) => !includesNormalized(value, '{playerName}'))
         };
 
+        const wallpaperStability = runWallpaperStabilityProbe(game, scene);
+        const wallpaperStatus = getWallpaperStatus(scene);
+        const aeroSurfaces = inspectAeroSurfaceLayers(game, scene);
         const canvasStates = [...document.querySelectorAll('canvas')].map((canvas) => ({
             id: canvas.id,
             width: canvas.width,
@@ -787,7 +923,9 @@ async function runSmoke() {
                 displayScaleFactor: getDisplayScaleFactor()
             },
             heroAssets: scene.renderer?.getHeroAssetStatus?.() || null,
-            liveBackdrop: scene.renderer?.getLiveBackdropAssetStatus?.() || null,
+            wallpaper: wallpaperStatus,
+            wallpaperStability,
+            aeroSurfaces,
             identity: {
                 submittedThroughDom: true,
                 playerName: TEST_PLAYER_NAME,
@@ -826,10 +964,22 @@ async function runSmoke() {
             && report.heroAssets?.requestedCount > 0
             && report.heroAssets?.readyCount === report.heroAssets?.requestedCount
             && report.heroAssets?.failedCount === 0
-            && report.liveBackdrop?.ready === true
-            && report.liveBackdrop?.failed === false
-            && report.liveBackdrop?.naturalWidth === 1920
-            && report.liveBackdrop?.naturalHeight === 1080
+            && isHealthyWallpaperStatus(report.wallpaper)
+            && report.captures.every((capture) => isHealthyWallpaperStatus(capture.wallpaper))
+            && report.wallpaperStability.frames === WALLPAPER_STABILITY_FRAMES
+            && report.wallpaperStability.afterFrameCount - report.wallpaperStability.beforeFrameCount
+                === WALLPAPER_STABILITY_FRAMES
+            && report.wallpaperStability.sameFrameComposite
+            && report.wallpaperStability.allocationsStable
+            && report.wallpaperStability.poolStable
+            && report.aeroSurfaces?.layerIds?.dimLayerId === null
+            && report.aeroSurfaces?.ui?.id === report.aeroSurfaces?.layerIds?.uiLayerId
+            && report.aeroSurfaces?.ui?.type === '2d'
+            && report.aeroSurfaces?.ui?.dynamic === true
+            && report.aeroSurfaces?.effect?.id === report.aeroSurfaces?.layerIds?.effectLayerId
+            && report.aeroSurfaces?.effect?.type === 'webgl'
+            && report.aeroSurfaces?.effect?.mode === 'overlay-effect'
+            && report.aeroSurfaces?.effect?.dynamic === true
             && isValidCaptureViewport(report.viewport.width, report.viewport.height)
             && report.identity.scenePlayerNameMatches
             && report.privacy.chatRequestCount > 0

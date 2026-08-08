@@ -70,7 +70,7 @@ html {
 .dynamic-canvas {
     position: absolute;
     background-color: rgba(0, 0, 0, 0);
-    image-rendering: pixelated;
+    image-rendering: auto;
 }
 
 @font-face {

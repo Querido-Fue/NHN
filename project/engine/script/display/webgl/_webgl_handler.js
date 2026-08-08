@@ -136,10 +136,19 @@ export class WebGLHandler {
     render(layerName, options) {
         const renderer = this.layerRenderers.get(layerName);
         if (!renderer) {
-            return;
+            return false;
         }
 
-        renderer.render(options);
+        return renderer.render(options);
+    }
+
+    /**
+     * 특정 WebGL 레이어 renderer가 제공하는 진단 계측을 반환합니다.
+     * @param {string} layerName - 대상 레이어 식별자입니다.
+     * @returns {object|null} 계측 스냅샷입니다.
+     */
+    getLayerMetrics(layerName) {
+        return this.layerRenderers.get(layerName)?.getMetrics?.() || null;
     }
 
     /**

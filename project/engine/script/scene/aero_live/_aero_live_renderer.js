@@ -9,11 +9,12 @@ import {
     resolveAeroLiveHeroPose
 } from './_aero_live_hero_animation.mjs';
 import { resolveAeroLivePlayerNameTemplate } from './_aero_live_player_identity.mjs';
+import { AeroLiveWallpaperEffectPass } from './_aero_live_wallpaper_effect_pass.js';
 
 const AERO_CONSTANTS = getData('AERO_LIVE_SCENE_CONSTANTS');
 const UI = AERO_CONSTANTS.UI;
 const COLORS = AERO_CONSTANTS.COLORS;
-const LIVE_BACKGROUND_PATH = AERO_CONSTANTS.ASSET.LIVE_BACKGROUND_PATH || '';
+const WALLPAPER = AERO_CONSTANTS.ASSET.WALLPAPER || {};
 const HERO_POSE_PATHS = AERO_CONSTANTS.ASSET.HERO_POSE_PATHS || {};
 const HERO_EXPRESSION_POSES = AERO_CONSTANTS.ASSET.HERO_EXPRESSION_POSES || {};
 const HERO_FALLBACK_POSE = AERO_CONSTANTS.ASSET.HERO_FALLBACK_POSE || 'neutral';
@@ -38,7 +39,7 @@ const GLASS_STYLE = Object.freeze({
     BLUR: 16,
     TINT_STRENGTH: 0.2,
     EDGE_STRENGTH: 0.5,
-    REFRACTION_STRENGTH: 0.012,
+    REFRACTION_STRENGTH: 4,
     SHADOW_RADIUS: 18,
     SHADOW_OFFSET_Y: 7
 });
@@ -124,12 +125,12 @@ export class AeroLiveRenderer {
         this.glassSessionInitialized = false;
         this.lastBackdropRevision = '';
         this.contentLayer = 'ui';
-        this.liveBackdrop = {
-            path: LIVE_BACKGROUND_PATH,
-            image: null,
-            ready: false,
-            failed: false
-        };
+        this.wallpaperEffectPass = null;
+        this.wallpaperRenderedThisFrame = false;
+        this.wallpaperAssetRecords = [];
+        this.wallpaperAssets = {};
+        this.disableTransparency = typeof getSetting === 'function'
+            && getSetting('disableTransparency') === true;
         this.heroReady = false;
         this.heroFailed = false;
         this.heroPoses = new Map();
@@ -139,24 +140,45 @@ export class AeroLiveRenderer {
         this.heroVisualStatus = null;
         const recordsByPath = new Map();
         const pendingLoads = [];
+        const wallpaperLoads = [];
 
-        if (LIVE_BACKGROUND_PATH) {
+        const wallpaperPaths = {
+            base: WALLPAPER.BASE_PATH,
+            normal: WALLPAPER.NORMAL_PATH,
+            waterMask: WALLPAPER.WATER_MASK_PATH,
+            cursorMask: WALLPAPER.CURSOR_MASK_PATH
+        };
+        for (const [key, rawPath] of Object.entries(wallpaperPaths)) {
+            const path = String(rawPath || '').trim();
+            const record = {
+                key,
+                path,
+                image: null,
+                ready: false,
+                failed: false
+            };
+            this.wallpaperAssetRecords.push(record);
+            this.wallpaperAssets[key] = record;
+            if (!path) {
+                record.failed = true;
+                continue;
+            }
             const image = new Image();
-            this.liveBackdrop.image = image;
-            pendingLoads.push(new Promise((resolve) => {
+            record.image = image;
+            const loadPromise = new Promise((resolve) => {
                 const settle = (ready) => {
-                    if (this.liveBackdrop.ready || this.liveBackdrop.failed) return;
-                    this.liveBackdrop.ready = ready;
-                    this.liveBackdrop.failed = !ready;
+                    if (record.ready || record.failed) return;
+                    record.ready = ready;
+                    record.failed = !ready;
                     this.lastBackdropRevision = '';
                     resolve();
                 };
                 image.onload = () => settle(true);
                 image.onerror = () => settle(false);
-            }));
-            image.src = LIVE_BACKGROUND_PATH;
-        } else {
-            this.liveBackdrop.failed = true;
+            });
+            pendingLoads.push(loadPromise);
+            wallpaperLoads.push(loadPromise);
+            image.src = path;
         }
 
         for (const [rawPose, rawPath] of Object.entries(HERO_POSE_PATHS)) {
@@ -192,36 +214,85 @@ export class AeroLiveRenderer {
             this.heroPoses.set(pose, record);
         }
 
+        this.wallpaperReadyPromise = Promise.all(wallpaperLoads).then(() => {
+            if (this.destroyed) return;
+            this.#ensureWallpaperEffectPass();
+        });
         this.readyPromise = Promise.all(pendingLoads).then(() => {
-            if (!this.destroyed) this.#refreshHeroLoadState();
+            if (this.destroyed) return;
+            this.#refreshHeroLoadState();
+            this.#ensureWallpaperEffectPass();
         });
     }
 
     /**
-     * 라이브 배경과 히로인 이미지의 로드 성공 또는 실패가 확정될 때까지 기다립니다.
+     * wallpaper 네 장과 히로인 이미지의 로드 성공 또는 실패가 확정될 때까지 기다립니다.
      * @returns {Promise<void>} 이미지 로드 완료 Promise입니다.
      */
     whenReady() {
         const heroSettled = this.heroReady || this.heroFailed;
-        const backdropSettled = this.liveBackdrop.ready || this.liveBackdrop.failed;
-        return this.destroyed || (heroSettled && backdropSettled)
+        const wallpaperSettled = this.wallpaperAssetRecords.every((record) => record.ready || record.failed);
+        return this.destroyed || (heroSettled && wallpaperSettled)
             ? Promise.resolve()
             : this.readyPromise;
     }
 
     /**
-     * NW 스모크와 진단에서 라이브 배경 에셋 상태를 확인합니다.
-     * @returns {{ready:boolean,failed:boolean,src:string,naturalWidth:number,naturalHeight:number}} 배경 로드 요약입니다.
+     * NW 스모크와 진단에서 wallpaper asset·shader·simulation·blur 상태를 확인합니다.
+     * @returns {object} wallpaper effect 진단 스냅샷입니다.
      */
-    getLiveBackdropAssetStatus() {
-        const record = this.liveBackdrop || {};
-        return {
+    getWallpaperEffectStatus() {
+        const assets = this.wallpaperAssetRecords.map((record) => ({
+            key: record.key,
+            src: record.image?.src || record.path || '',
             ready: record.ready === true,
             failed: record.failed === true,
-            src: record.image?.src || record.path || '',
             naturalWidth: record.image?.naturalWidth || 0,
             naturalHeight: record.image?.naturalHeight || 0
+        }));
+        const effectStatus = this.wallpaperEffectPass?.getStatus?.() || {};
+        const overlayMetrics = this.glassSession?.getEffectMetrics?.() || null;
+        return {
+            ...effectStatus,
+            ready: effectStatus.ready === true,
+            failed: effectStatus.failed === true
+                || this.wallpaperAssets.base?.failed === true,
+            assets,
+            assetMap: effectStatus.assets || {},
+            passes: {
+                ...(effectStatus.passes || {}),
+                lastOrder: Array.isArray(overlayMetrics?.lastBackdropPassOrder)
+                    ? [...overlayMetrics.lastBackdropPassOrder]
+                    : []
+            },
+            renderedThisFrame: this.wallpaperRenderedThisFrame,
+            blur: {
+                sourceCount: overlayMetrics?.blurSourceCount || 0,
+                canvasUploads: overlayMetrics?.canvasUploads || 0,
+                refreshCount: overlayMetrics?.blurRefreshes || 0,
+                backdropFrameSerial: overlayMetrics?.backdropFrameSerial ?? -1,
+                sampledBackdropFrameSerial: overlayMetrics?.sampledBackdropFrameSerial ?? -1
+            },
+            overlay: overlayMetrics
         };
+    }
+
+    /** 이전 smoke 소비자용 호환 alias입니다. @returns {object} wallpaper 진단입니다. */
+    getLiveBackdropAssetStatus() {
+        return this.getWallpaperEffectStatus();
+    }
+
+    /**
+     * 실행 중 변경된 투명도 설정을 AERO 전용 overlay session에 전달합니다.
+     * @param {object} [changedSettings={}] - 변경된 런타임 설정입니다.
+     */
+    applyRuntimeSettings(changedSettings = {}) {
+        if (changedSettings.disableTransparency === undefined) {
+            return;
+        }
+        this.disableTransparency = changedSettings.disableTransparency === true;
+        this.glassSession?.setDisableTransparency?.(this.disableTransparency);
+        this.lastBackdropRevision = '';
     }
 
     /**
@@ -262,8 +333,8 @@ export class AeroLiveRenderer {
         if (this.destroyed || !context) return;
         this.context = context;
         this.#ensureGlassSession();
-        this.#syncGlassBackdropRevision();
         this.#backdrop();
+        this.#syncGlassBackdropRevision();
         if (context.mode === 'nickname') this.#nickname();
         else if (context.mode === 'topicSelect') this.#topics();
         else if (context.mode === 'results') this.#results();
@@ -291,16 +362,18 @@ export class AeroLiveRenderer {
         this.heroSemanticPose = null;
         this.heroSemanticPoseChangedAt = 0;
         this.heroVisualStatus = null;
-        if (this.liveBackdrop?.image) {
-            this.liveBackdrop.image.onload = null;
-            this.liveBackdrop.image.onerror = null;
+        for (const record of this.wallpaperAssetRecords) {
+            if (record.image) {
+                record.image.onload = null;
+                record.image.onerror = null;
+            }
+            record.image = null;
         }
-        this.liveBackdrop = {
-            path: LIVE_BACKGROUND_PATH,
-            image: null,
-            ready: false,
-            failed: true
-        };
+        this.wallpaperEffectPass?.destroy?.();
+        this.wallpaperEffectPass = null;
+        this.wallpaperAssetRecords = [];
+        this.wallpaperAssets = {};
+        this.wallpaperRenderedThisFrame = false;
         this.glassSession?.release?.();
         this.glassSession = null;
         this.glassSessionInitialized = true;
@@ -319,23 +392,46 @@ export class AeroLiveRenderer {
         this.contentLayer = this.glassSession?.uiLayerId || 'ui';
     }
 
-    /** 배경 종류·크기 전환과 절차식 움직임을 blur revision으로 양자화합니다. @private */
+    /** wallpaper asset이 settle된 뒤 scene 전용 GPU pass를 한 번만 준비합니다. @private */
+    #ensureWallpaperEffectPass() {
+        if (this.wallpaperEffectPass || this.destroyed) {
+            return;
+        }
+        const assetsSettled = this.wallpaperAssetRecords.every((record) => record.ready || record.failed);
+        if (!assetsSettled) {
+            return;
+        }
+        const baseRecord = this.wallpaperAssets.base;
+        if (!baseRecord?.ready || !baseRecord.image) {
+            return;
+        }
+        try {
+            this.wallpaperEffectPass = new AeroLiveWallpaperEffectPass({
+                assets: Object.fromEntries(Object.entries(this.wallpaperAssets).map(([key, record]) => [
+                    key,
+                    record?.ready ? record.image : null
+                ])),
+                parameters: WALLPAPER
+            });
+        } catch {
+            this.wallpaperEffectPass = null;
+        }
+    }
+
+    /** wallpaper animation을 지정 주기로 양자화해 공유 blur texture만 저빈도로 갱신합니다. @private */
     #syncGlassBackdropRevision() {
-        if (!this.glassSession?.effectLayerId) {
+        if (!this.wallpaperRenderedThisFrame || !this.glassSession?.isGlassEnabled?.()) {
             return;
         }
         const c = this.context || {};
-        const liveRaster = c.mode === 'live' && this.liveBackdrop.ready;
-        const bucket = liveRaster
-            ? 'static'
-            : Math.floor(Math.max(0, number(c.elapsedVisualSeconds)) * 10);
+        const effectStatus = this.wallpaperEffectPass?.getStatus?.() || {};
+        const refreshHz = Math.max(1, number(WALLPAPER.BLUR_REFRESH_HZ, 10));
+        const bucket = Math.floor(Math.max(0, number(c.elapsedVisualSeconds)) * refreshHz);
         const revision = [
-            c.mode,
-            liveRaster ? 'live-raster' : 'procedural',
+            effectStatus.mode || 'static',
+            number(effectStatus.resourceRevision),
             Math.round(number(c.WW)),
             Math.round(number(c.WH)),
-            Math.round(number(c.UIWW)),
-            Math.round(number(c.UIOffsetX)),
             bucket
         ].join(':');
         if (revision === this.lastBackdropRevision) {
@@ -357,12 +453,11 @@ export class AeroLiveRenderer {
                 layer: 0,
                 dim: 0,
                 transparent: true,
-                glOverlay: false,
+                glOverlay: true,
                 blurUpdateMode: 'dirty',
                 effects: {},
                 orderSequence: 0,
-                disableTransparency: typeof getSetting === 'function'
-                    && getSetting('disableTransparency') === true
+                disableTransparency: this.disableTransparency
             });
         } catch {
             return null;
@@ -393,10 +488,31 @@ export class AeroLiveRenderer {
         return this.heroAssetRecords.find((record) => record.ready && record.image) || null;
     }
 
-    /** 라이브 PNG 또는 폴백 하늘·구름·원근 그리드 backdrop을 그립니다. @private */
+    /** 이식한 WebGL wallpaper 또는 안전한 정적·절차식 폴백 backdrop을 그립니다. @private */
     #backdrop() {
         const c = this.context;
-        if (c.mode === 'live' && this.liveBackdrop.ready && this.liveBackdrop.image) {
+        this.wallpaperRenderedThisFrame = false;
+        this.#ensureWallpaperEffectPass();
+        if (this.wallpaperEffectPass && this.glassSession?.effectLayerId) {
+            this.wallpaperRenderedThisFrame = this.glassSession.renderBackdropEffect({
+                effectPass: this.wallpaperEffectPass,
+                elapsedSeconds: Math.max(0, number(c.elapsedVisualSeconds)),
+                deltaSeconds: Math.max(0, number(c.deltaVisualSeconds)),
+                pointer: c.wallpaperPointer || null,
+                viewport: c.layout?.backdrop || {
+                    x: 0,
+                    y: 0,
+                    w: c.WW,
+                    h: c.WH
+                }
+            });
+            if (this.wallpaperRenderedThisFrame) {
+                return;
+            }
+        }
+
+        const baseRecord = this.wallpaperAssets.base;
+        if (baseRecord?.ready && baseRecord.image) {
             render('ui', {
                 shape: 'rect',
                 x: 0,
@@ -407,11 +523,11 @@ export class AeroLiveRenderer {
             });
             render('ui', {
                 shape: 'image',
-                image: this.liveBackdrop.image,
+                image: baseRecord.image,
                 sx: 0,
                 sy: 0,
-                sw: Math.max(1, number(this.liveBackdrop.image.naturalWidth || this.liveBackdrop.image.width, 1920)),
-                sh: Math.max(1, number(this.liveBackdrop.image.naturalHeight || this.liveBackdrop.image.height, 1080)),
+                sw: Math.max(1, number(baseRecord.image.naturalWidth || baseRecord.image.width, 1920)),
+                sh: Math.max(1, number(baseRecord.image.naturalHeight || baseRecord.image.height, 1080)),
                 x: c.layout?.backdrop?.x ?? c.UIOffsetX,
                 y: c.layout?.backdrop?.y ?? 0,
                 w: c.layout?.backdrop?.w ?? c.UIWW,
@@ -664,10 +780,31 @@ export class AeroLiveRenderer {
 
     /** 메인·우상 채팅·우하 프로듀서 창으로 방송 화면을 그립니다. @private */
     #live() {
+        this.#liveWindows();
         this.#topBar();
         this.#hero();
         this.#chatPanel();
         this.#leftPanel();
+    }
+
+    /** baked skin을 대신하는 세 개의 실제 backdrop glass 방송 창을 그립니다. @private */
+    #liveWindows() {
+        const layout = this.context.layout;
+        [
+            [layout.mainFrame, 'live-main', COLORS.AERO_PINK || COLORS.SKY_HAZE, .08],
+            [layout.chatFrame, 'live-chat', COLORS.AQUA, .1],
+            [layout.producerFrame, 'live-producer', COLORS.AERO_VIOLET || COLORS.SKY_HAZE, .09]
+        ].forEach(([rect, role, tintColor, tintStrength]) => {
+            this.#panel(rect, {
+                role,
+                fill: 'rgba(235,251,255,0.28)',
+                contentTint: 'rgba(245,254,255,0.06)',
+                tintColor,
+                tintStrength,
+                alpha: .94,
+                shadowRadius: 20
+            });
+        });
     }
 
     /** 방송 상단 상태 바를 그립니다. @private */
@@ -676,7 +813,7 @@ export class AeroLiveRenderer {
         const rect = c.layout.topBar;
         const m = c.snapshot?.metrics || {};
         const pad = c.layout.panelPad;
-        if (!this.#usesLiveBackdrop()) {
+        if (!this.#usesLiveWindowLayout()) {
             this.#panel(rect, { fill: COLORS.GLASS_FILL_STRONG, tintStrength: .15 });
         }
         const pill = { x: rect.x + pad * .6, y: rect.y + rect.h * .24, w: Math.max(64, rect.h * 1.25), h: rect.h * .52 };
@@ -685,7 +822,7 @@ export class AeroLiveRenderer {
         const titleX = pill.x + pill.w + pad * .7;
         this.#label(c.snapshot?.topic?.title || 'AERO LIVE', titleX, rect.y + rect.h * .34, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950, maxWidth: rect.w * .26 });
         this.#label(clock(c.snapshot?.elapsedSeconds), titleX, rect.y + rect.h * .68, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { baseline: 'middle', weight: 700 });
-        if (this.#usesLiveBackdrop()) {
+        if (this.#usesLiveWindowLayout()) {
             this.#macWindowControls(c.layout.mainWindowControls, c.endButton);
         } else {
             this.#button(c.endButton, '종료', COLORS.DARK_GLASS, COLORS.NEGATIVE, COLORS.GLASS_WHITE);
@@ -704,22 +841,22 @@ export class AeroLiveRenderer {
         const c = this.context;
         const rect = c.layout.left;
         const m = c.snapshot?.metrics || {};
-        const titleRect = this.#usesLiveBackdrop() && c.layout.producerTitleBar
+        const titleRect = this.#usesLiveWindowLayout() && c.layout.producerTitleBar
             ? c.layout.producerTitleBar
             : rect;
-        const liveBackdrop = this.#usesLiveBackdrop();
-        if (!liveBackdrop) {
+        const liveWindowLayout = this.#usesLiveWindowLayout();
+        if (!liveWindowLayout) {
             this.#panel(rect, { fill: COLORS.GLASS_FILL, alpha: .92, tintStrength: .16 });
         }
-        const producerTitleY = liveBackdrop
+        const producerTitleY = liveWindowLayout
             ? titleRect.y + titleRect.h * .5
             : rect.y + c.layout.panelPad * .68;
         this.#label('프로듀서 콘솔', titleRect.x + c.layout.panelPad * .45, producerTitleY, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950 });
-        const producerStatusX = liveBackdrop
+        const producerStatusX = liveWindowLayout
             ? titleRect.x + titleRect.w * .67
             : titleRect.x + titleRect.w - c.layout.panelPad * .45;
         this.#label(`강퇴 ${integer(c.snapshot?.resources?.kicksRemaining)}회`, producerStatusX, producerTitleY, this.#size(UI.SMALL_FONT_WH), COLORS.NEGATIVE, { align: 'right', baseline: 'middle', weight: 850, maxWidth: titleRect.w * .24 });
-        if (liveBackdrop) {
+        if (liveWindowLayout) {
             this.#macWindowControls(c.layout.producerWindowControls);
         }
         this.#donation();
@@ -744,7 +881,7 @@ export class AeroLiveRenderer {
         const c = this.context;
         const d = c.snapshot?.activeDonation;
         const rect = c.layout.donationCard;
-        this.#panel(rect, { fill: d ? 'rgba(255,214,90,0.22)' : COLORS.GLASS_FILL_STRONG, stroke: d ? COLORS.WARNING : COLORS.GLASS_BORDER, lineWidth: d ? 2.5 : 1.2 });
+        this.#panel(rect, { role: 'live-donation', fill: d ? 'rgba(255,214,90,0.22)' : COLORS.GLASS_FILL_STRONG, stroke: d ? COLORS.WARNING : COLORS.GLASS_BORDER, lineWidth: d ? 2.5 : 1.2 });
         if (!d) {
             return;
         }
@@ -790,8 +927,18 @@ export class AeroLiveRenderer {
             src: heroRecord?.image?.src || heroRecord?.path || '',
             motion: { ...animationFrame.motion }
         };
-        const liveBackdrop = this.#usesLiveBackdrop();
-        if (!liveBackdrop) {
+        const liveWindowLayout = this.#usesLiveWindowLayout();
+        if (liveWindowLayout) {
+            this.#panel(stage, {
+                role: 'live-stage',
+                fill: 'rgba(7,35,59,0.18)',
+                stroke: COLORS.AQUA,
+                tintColor: COLORS.AERO_PINK || COLORS.SKY_HAZE,
+                tintStrength: .055,
+                alpha: .78,
+                shadowRadius: 8
+            });
+        } else {
             this.#panel(c.layout.center, { fill: COLORS.GLASS_FILL, alpha: .89, tintColor: COLORS.AERO_PINK || COLORS.SKY_HAZE, tintStrength: .07 });
             this.#drawContent({
                 shape: 'roundRect',
@@ -805,7 +952,7 @@ export class AeroLiveRenderer {
             });
             this.#drawContent({ shape: 'roundRect', ...stage, radius: this.#radius(), fill: heroImage ? COLORS.GLASS_WHITE : COLORS.DARK_GLASS });
         }
-        const heroImageRect = liveBackdrop
+        const heroImageRect = liveWindowLayout
             ? {
                 x: stage.x + stage.w * .19,
                 y: stage.y,
@@ -818,7 +965,7 @@ export class AeroLiveRenderer {
             this.#drawContent({ shape: 'circle', x: stage.x + stage.w / 2, y: stage.y + stage.h * .49, radius: Math.min(stage.w, stage.h) * .22, fill: COLORS.AQUA, alpha: .45 });
             this.#label('AERO', stage.x + stage.w / 2, stage.y + stage.h * .49, this.#size(UI.TITLE_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 950 });
         }
-        if (!liveBackdrop) {
+        if (!liveWindowLayout) {
             this.#drawContent({
                 shape: 'roundRect', ...stage, radius: this.#radius(), fill: false,
                 stroke: COLORS.GLASS_BORDER, lineWidth: 2
@@ -847,6 +994,7 @@ export class AeroLiveRenderer {
             this.#timer({ x: stage.x + stage.w * .2, y: stage.y + stage.h * .91, w: stage.w * .6, h: Math.max(9, stage.h * .022) }, activeDonation.timeRemainingSeconds, c.timerMaximums.donation, COLORS.WARNING, '후원 디렉션');
         }
         this.#panel(dialogue, {
+            role: 'live-dialogue',
             fill: 'rgba(7,35,59,0.34)',
             contentTint: 'rgba(5,30,51,0.7)',
             stroke: COLORS.AQUA,
@@ -865,12 +1013,12 @@ export class AeroLiveRenderer {
         const c = this.context;
         const rect = c.layout.right;
         const resources = c.snapshot?.resources || {};
-        if (!this.#usesLiveBackdrop()) {
+        if (!this.#usesLiveWindowLayout()) {
             this.#panel(rect, { fill: COLORS.GLASS_FILL, alpha: .92, tintStrength: .16 });
         }
         this.#label('실시간 채팅', rect.x + c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950 });
         this.#label(`자유 채팅 ${integer(resources.playerMessagesRemaining)}회`, rect.x + rect.w - c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SMALL_FONT_WH), COLORS.DEEP_BLUE, { align: 'right', baseline: 'middle', weight: 850 });
-        if (this.#usesLiveBackdrop()) {
+        if (this.#usesLiveWindowLayout()) {
             this.#macWindowControls(c.layout.chatWindowControls);
         }
         this.#chats();
@@ -1341,11 +1489,9 @@ export class AeroLiveRenderer {
         this.#label(label, rect.x + rect.w / 2, rect.y + rect.h / 2, Math.min(this.#size(UI.BODY_FONT_WH), rect.h * .34), textColor, { align: 'center', baseline: 'middle', weight: 900, maxWidth: rect.w * .9, alpha: disabled ? .55 : 1 });
     }
 
-    /** 현재 프레임이 준비된 라이브 방송 배경을 사용하는지 반환합니다. @private */
-    #usesLiveBackdrop() {
-        return this.context?.mode === 'live'
-            && this.liveBackdrop?.ready === true
-            && !!this.liveBackdrop?.image;
+    /** wallpaper 준비 상태와 무관하게 방송 창 좌표계를 쓰는지 반환합니다. @private */
+    #usesLiveWindowLayout() {
+        return this.context?.mode === 'live';
     }
 
     /** 유리 패널을 그립니다. @private */
@@ -1355,8 +1501,11 @@ export class AeroLiveRenderer {
         const fill = style.fill || COLORS.GLASS_FILL;
         const stroke = style.stroke || COLORS.GLASS_BORDER;
         const lineWidth = style.lineWidth || 1.2;
-        if (!style.contentOnly && this.glassSession?.effectLayerId) {
+        if (!style.contentOnly
+            && this.wallpaperRenderedThisFrame
+            && this.glassSession?.isGlassEnabled?.()) {
             this.glassSession.renderGlassPanel({
+                debugRole: style.role || '',
                 x: rect.x,
                 y: rect.y,
                 w: rect.w,
