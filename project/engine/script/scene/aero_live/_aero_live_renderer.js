@@ -145,6 +145,13 @@ export class AeroLiveRenderer {
         this.heroAssetRecords = [];
         this.heroSemanticPose = null;
         this.heroSemanticPoseChangedAt = 0;
+        this.heroBeatId = '';
+        this.heroBeatChangedAt = 0;
+        this.heroResponseKey = '';
+        this.heroResponseChangedAt = 0;
+        this.heroEventKey = '';
+        this.heroEventChangedAt = 0;
+        this.lastDrawMode = null;
         this.heroVisualStatus = null;
         const recordsByPath = new Map();
         const pendingLoads = [];
@@ -376,6 +383,11 @@ export class AeroLiveRenderer {
     draw(context) {
         if (this.destroyed || !context) return;
         this.context = context;
+        const previousMode = this.lastDrawMode;
+        this.lastDrawMode = context.mode;
+        if (context.mode === 'live' && previousMode !== 'live') {
+            this.#resetHeroMotionTimeline(context.elapsedVisualSeconds);
+        }
         this.liveStageBackgroundRenderedThisFrame = false;
         this.#ensureGlassSession();
         this.#backdrop();
@@ -406,6 +418,13 @@ export class AeroLiveRenderer {
         this.heroFailed = false;
         this.heroSemanticPose = null;
         this.heroSemanticPoseChangedAt = 0;
+        this.heroBeatId = '';
+        this.heroBeatChangedAt = 0;
+        this.heroResponseKey = '';
+        this.heroResponseChangedAt = 0;
+        this.heroEventKey = '';
+        this.heroEventChangedAt = 0;
+        this.lastDrawMode = null;
         this.heroVisualStatus = null;
         for (const record of this.wallpaperAssetRecords) {
             if (record.image) {
@@ -972,10 +991,14 @@ export class AeroLiveRenderer {
             this.heroSemanticPose = semanticPose;
             this.heroSemanticPoseChangedAt = visualSeconds;
         }
+        const motionProfile = this.#resolveHeroMotionProfile(beat, semanticPose, visualSeconds);
         const animationFrame = getAeroLiveHeroAnimationFrame({
             pose: semanticPose,
             elapsedSeconds: visualSeconds,
-            poseAgeSeconds: visualSeconds - this.heroSemanticPoseChangedAt
+            poseAgeSeconds: visualSeconds - this.heroSemanticPoseChangedAt,
+            motionState: motionProfile.state,
+            motionStateAgeSeconds: motionProfile.ageSeconds,
+            emotion: activeExpression
         });
         const heroRecord = this.#heroRecordForPose(animationFrame.assetKey, semanticPose);
         const heroImage = heroRecord?.image || null;
@@ -985,6 +1008,8 @@ export class AeroLiveRenderer {
             expression: String(activeExpression || ''),
             pose: semanticPose,
             assetKey: animationFrame.assetKey,
+            motionState: animationFrame.motionState,
+            motionStateAgeSeconds: motionProfile.ageSeconds,
             resolvedPoses: heroRecord ? [...heroRecord.poses] : [],
             src: heroRecord?.image?.src || heroRecord?.path || '',
             motion: { ...animationFrame.motion }
@@ -1073,6 +1098,101 @@ export class AeroLiveRenderer {
             this.#label(responseLabel, dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .22, this.#size(UI.SMALL_FONT_WH), responseLabel === '채팅 답변' ? COLORS.AQUA : COLORS.WARNING, { baseline: 'middle', weight: 900 });
         }
         this.#wrapped(c.heroResponseText || beat.heroText || '방송 시작을 준비하고 있어요.', dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .4, dialogue.w * .89, this.#size(UI.DIALOGUE_FONT_WH), COLORS.GLASS_WHITE, 3);
+    }
+
+    /**
+     * 모드 전환 뒤 이전 방송의 cue 시간이 새 방송에 이어지지 않도록 시각 타임라인을 초기화합니다.
+     * @param {*} elapsedSeconds - 현재 명시적 시각 시간입니다.
+     * @private
+     */
+    #resetHeroMotionTimeline(elapsedSeconds) {
+        const visualSeconds = Math.max(0, number(elapsedSeconds));
+        this.heroSemanticPose = null;
+        this.heroSemanticPoseChangedAt = visualSeconds;
+        this.heroBeatId = '';
+        this.heroBeatChangedAt = visualSeconds;
+        this.heroResponseKey = '';
+        this.heroResponseChangedAt = visualSeconds;
+        this.heroEventKey = '';
+        this.heroEventChangedAt = visualSeconds;
+    }
+
+    /**
+     * 현재 방송 상황을 겹치지 않는 단일 히로인 motion 상태로 바꿉니다.
+     * cue 시각은 pose 전환과 분리해 같은 표정의 새 사건도 파형 시작점부터 재생합니다.
+     * @param {object} beat - 현재 방송 비트입니다.
+     * @param {string} semanticPose - 현재 물리 pose입니다.
+     * @param {number} visualSeconds - 현재 명시적 시각 시간입니다.
+     * @returns {{state:string,ageSeconds:number}} motion 상태와 경과 시간입니다.
+     * @private
+     */
+    #resolveHeroMotionProfile(beat, semanticPose, visualSeconds) {
+        const c = this.context;
+        const beatId = String(beat?.id || '');
+        if (beatId !== this.heroBeatId) {
+            this.heroBeatId = beatId;
+            this.heroBeatChangedAt = visualSeconds;
+        }
+
+        const responseText = String(c.heroResponseText || '');
+        const responseKey = responseText
+            ? `${String(c.heroResponseLabel || '')}:${String(c.heroResponseExpression || '')}:${responseText}`
+            : '';
+        if (responseKey) {
+            if (responseKey !== this.heroResponseKey) {
+                this.heroResponseKey = responseKey;
+                this.heroResponseChangedAt = visualSeconds;
+            }
+        } else {
+            this.heroResponseKey = '';
+            this.heroResponseChangedAt = visualSeconds;
+        }
+
+        const donation = c.snapshot?.activeDonation || null;
+        const core = c.snapshot?.activeCoreChat || null;
+        const eventType = donation ? 'donation' : (core ? 'core' : '');
+        const event = donation || core;
+        const eventIdentity = event
+            ? String(event.id || event.donationId || event.coreChatId || event.author || event.text || 'active')
+            : '';
+        const eventKey = eventType ? `${eventType}:${eventIdentity}` : '';
+        if (eventKey) {
+            if (eventKey !== this.heroEventKey) {
+                this.heroEventKey = eventKey;
+                this.heroEventChangedAt = visualSeconds;
+            }
+        } else {
+            this.heroEventKey = '';
+            this.heroEventChangedAt = visualSeconds;
+        }
+
+        if (c.earlyEndModalOpen) {
+            return { state: 'still', ageSeconds: 0 };
+        }
+        if (responseKey) {
+            return {
+                state: 'speaking',
+                ageSeconds: Math.max(0, visualSeconds - this.heroResponseChangedAt)
+            };
+        }
+        if (c.inputClassificationPending) {
+            return { state: 'listening', ageSeconds: 0 };
+        }
+        if (eventKey) {
+            return {
+                state: eventType,
+                ageSeconds: Math.max(0, visualSeconds - this.heroEventChangedAt)
+            };
+        }
+
+        const beatAgeSeconds = Math.max(0, visualSeconds - this.heroBeatChangedAt);
+        if (beatId && beatAgeSeconds < 0.9) {
+            return { state: 'beat', ageSeconds: beatAgeSeconds };
+        }
+        return {
+            state: semanticPose === 'controller' ? 'controller' : 'idle',
+            ageSeconds: beatAgeSeconds
+        };
     }
 
     /**

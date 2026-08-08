@@ -32,6 +32,16 @@ const LIVE_STAGE_BACKGROUND_RENDER_EXPECTATIONS = Object.freeze({
     'early-end-modal': true,
     results: false
 });
+const HERO_ACTIVE_VISUAL_CAPTURE_NAMES = Object.freeze([
+    'opening-chats',
+    'live',
+    'early-end-modal'
+]);
+const HERO_MOTION_LIMITS = Object.freeze({
+    offsetRatio: 0.025,
+    scaleDelta: 0.04,
+    rotationDegrees: 0.8
+});
 const errors = [];
 const warnings = [];
 const nodeRequire = window.require;
@@ -221,6 +231,71 @@ function getDisplayScaleFactor() {
 function numberOr(value, fallback) {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+/** 진단용 숫자를 비밀정보 없는 고정 정밀도 값으로 직렬화합니다. */
+function snapshotFiniteNumber(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Number(numeric.toFixed(6)) : null;
+}
+
+/**
+ * 캡처 순간의 히로인 시각 상태에서 에셋 경로와 콘텐츠 문자열을 제외합니다.
+ * @param {object} scene - 현재 AERO LIVE Scene입니다.
+ * @returns {object|null} pose와 움직임만 담은 privacy-safe snapshot입니다.
+ */
+function inspectHeroActiveVisual(scene) {
+    const activeVisual = scene.renderer?.getHeroAssetStatus?.()?.activeVisual;
+    if (!activeVisual) return null;
+    const motion = activeVisual.motion || {};
+    return {
+        pose: String(activeVisual.pose || ''),
+        assetKey: String(activeVisual.assetKey || ''),
+        motionState: String(activeVisual.motionState || ''),
+        motionStateAgeSeconds: snapshotFiniteNumber(activeVisual.motionStateAgeSeconds),
+        motion: {
+            offsetXRatio: snapshotFiniteNumber(motion.offsetXRatio),
+            offsetYRatio: snapshotFiniteNumber(motion.offsetYRatio),
+            scaleX: snapshotFiniteNumber(motion.scaleX),
+            scaleY: snapshotFiniteNumber(motion.scaleY),
+            rotation: snapshotFiniteNumber(motion.rotation),
+            animation: String(motion.animation || '')
+        }
+    };
+}
+
+/** 현재 game pose가 차분한 상한 안에서 지정 상황 동작을 유지하는지 검사합니다. */
+function isBoundedControllerVisual(activeVisual, expectedMotionStates) {
+    const motion = activeVisual?.motion;
+    return activeVisual?.pose === 'controller'
+        && activeVisual?.assetKey === 'controller'
+        && expectedMotionStates.includes(activeVisual?.motionState)
+        && Number.isFinite(activeVisual?.motionStateAgeSeconds)
+        && activeVisual.motionStateAgeSeconds >= 0
+        && Number.isFinite(motion?.offsetXRatio)
+        && Number.isFinite(motion?.offsetYRatio)
+        && Number.isFinite(motion?.scaleX)
+        && Number.isFinite(motion?.scaleY)
+        && Number.isFinite(motion?.rotation)
+        && Math.abs(motion.offsetXRatio) <= HERO_MOTION_LIMITS.offsetRatio
+        && Math.abs(motion.offsetYRatio) <= HERO_MOTION_LIMITS.offsetRatio
+        && Math.abs(motion.scaleX - 1) <= HERO_MOTION_LIMITS.scaleDelta
+        && Math.abs(motion.scaleY - 1) <= HERO_MOTION_LIMITS.scaleDelta
+        && Math.abs(motion.rotation) <= HERO_MOTION_LIMITS.rotationDegrees
+        && typeof motion.animation === 'string'
+        && motion.animation.length > 0;
+}
+
+/** 정지 상태가 위치·크기·회전 모두 identity transform인지 검사합니다. */
+function isIdentityStillVisual(activeVisual) {
+    const motion = activeVisual?.motion;
+    return activeVisual?.motionState === 'still'
+        && motion?.offsetXRatio === 0
+        && motion?.offsetYRatio === 0
+        && motion?.scaleX === 1
+        && motion?.scaleY === 1
+        && motion?.rotation === 0
+        && motion?.animation === 'still';
 }
 
 /** 현재 Renderer의 직렬화 가능한 wallpaper 진단을 반환합니다. */
@@ -692,6 +767,9 @@ async function captureState(state) {
     await waitForPaint();
     const renderedTexts = state.textCapture?.snapshot?.() || [];
     const capture = await capturePng(state.nativeWindow, outputPath);
+    const activeVisual = HERO_ACTIVE_VISUAL_CAPTURE_NAMES.includes(state.name)
+        ? inspectHeroActiveVisual(state.scene)
+        : null;
     fs.writeFileSync(
         path.join(state.paths.outputDirectory, 'stage.txt'),
         `capture-${state.name}-complete\n`,
@@ -709,6 +787,7 @@ async function captureState(state) {
         composer: inspectComposer(state.scene),
         nicknameComposer: inspectNicknameComposer(state.scene),
         renderedTexts,
+        ...(activeVisual ? { activeVisual } : {}),
         ...capture
     };
 }
@@ -1014,6 +1093,15 @@ async function runSmoke() {
             errors,
             warnings
         };
+        const openingActiveVisual = captures.find(
+            (capture) => capture.name === 'opening-chats'
+        )?.activeVisual;
+        const speakingActiveVisual = captures.find(
+            (capture) => capture.name === 'live'
+        )?.activeVisual;
+        const stillActiveVisual = captures.find(
+            (capture) => capture.name === 'early-end-modal'
+        )?.activeVisual;
         report.ok = report.heroAssets?.ready === true
             && report.heroAssets?.failed === false
             && report.heroAssets?.requestedCount > 0
@@ -1079,6 +1167,10 @@ async function runSmoke() {
             && report.liveState.earlyEndAccepted
             && report.result.endType === 'early'
             && report.result.hasResult
+            && isBoundedControllerVisual(openingActiveVisual, ['controller', 'beat'])
+            && isBoundedControllerVisual(speakingActiveVisual, ['speaking'])
+            && isBoundedControllerVisual(stillActiveVisual, ['still'])
+            && isIdentityStillVisual(stillActiveVisual)
             && report.captures[0].composer.display === 'none'
             && report.captures[0].nicknameComposer.display !== 'none'
             && report.captures[0].nicknameComposer.withinViewport
