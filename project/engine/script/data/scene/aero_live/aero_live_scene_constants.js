@@ -133,7 +133,7 @@ export const AERO_LIVE_SCENE_CONSTANTS = Object.freeze({
         CHAT_API_MODEL: 'gemini-3.6-flash',
         INTENT_API_MODEL: 'gemini-3.5-flash-lite',
         API_MODEL: 'gemini-3.5-flash-lite',
-        PROMPT_REVISION: 'aero-live-chat-v4',
+        PROMPT_REVISION: 'aero-live-chat-v6',
         SCHEMA_VERSION: 'aero-live-ai-v1',
         REQUEST_TIMEOUT_MS: 8000,
         THINKING_LEVEL: 'low',

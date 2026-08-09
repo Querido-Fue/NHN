@@ -12,6 +12,7 @@ const MODEL_PLAYER_MESSAGE = '{playerName} 최고야';
 const MODEL_HERO_REPLY = '{playerName}님 고마워!';
 const MODEL_CALLBACK_TEXT = '아까 {playerName} 말 좋았어';
 const MODEL_REACTION_TEXT = '{playerName} 응원 좋다';
+const MODEL_CONTEXT_CHAT_TEXT = '공포게임 분위기 ㄷㄷ';
 const WALLPAPER_STABILITY_FRAMES = 30;
 const WALLPAPER_ASSET_SPECS = Object.freeze({
     base: Object.freeze({ suffix: '/asset/image/aero_live/wallpaper/ocean_rings_base.png', width: 1920, height: 1080 }),
@@ -829,7 +830,15 @@ async function runSmoke() {
         const intentRequestContexts = [];
         scene.aiService.generateChatBatch = async (context) => {
             chatRequestContexts.push(structuredClone(context));
-            return { chats: [], source: 'nw-smoke-disabled' };
+            const viewerIds = Array.isArray(context?.viewerIds) ? context.viewerIds : [];
+            return {
+                chats: [{
+                    viewer_id: viewerIds.at(-1) || 'v001',
+                    sentiment: 'neutral',
+                    text: MODEL_CONTEXT_CHAT_TEXT
+                }],
+                source: 'nw-smoke-context'
+            };
         };
         scene.aiService.classifyPlayerMessage = async (context) => {
             intentRequestContexts.push(structuredClone(context));
@@ -881,16 +890,34 @@ async function runSmoke() {
         await Promise.resolve();
         scene.update();
 
+        const openingBeatId = String(scene.snapshot?.currentBeat?.id || '');
+        const openingReferenceTexts = new Set(
+            (chatRequestContexts[0]?.referenceChats || []).map((chat) => String(chat?.text || ''))
+        );
+        const isOpeningContextChat = (chat) => chat?.beatId === openingBeatId
+            && (openingReferenceTexts.has(String(chat?.text || ''))
+                || chat?.source === 'bridge-fallback'
+                || chat?.source === 'event-context'
+                || chat?.source === 'nw-smoke-context');
         let openingChatTicks = 0;
-        while (openingChatTicks < MAX_OPENING_CHAT_TICKS
-            && scene.snapshot?.chats?.filter((chat) => chat.source === 'opening-aha').length < 12) {
+        while (openingChatTicks < MAX_OPENING_CHAT_TICKS) {
+            const currentChats = Array.isArray(scene.snapshot?.chats) ? scene.snapshot.chats : [];
+            const greetingCount = currentChats.filter((chat) => chat.source === 'opening-aha').length;
+            const contextCount = currentChats.filter(isOpeningContextChat).length;
+            const hasJamoContext = currentChats.some((chat) => (
+                chat.source === 'nw-smoke-context' && chat.text === MODEL_CONTEXT_CHAT_TEXT
+            ));
+            if (greetingCount === 1 && contextCount >= 3 && hasJamoContext) break;
             scene.fixedUpdate();
             openingChatTicks += 1;
         }
         scene.update();
         const openingAhaChats = scene.snapshot?.chats
             ?.filter((chat) => chat.source === 'opening-aha') || [];
-        if (openingAhaChats.length !== 12) {
+        const openingContextChats = scene.snapshot?.chats?.filter(isOpeningContextChat) || [];
+        if (openingAhaChats.length !== 1
+            || openingContextChats.length < 3
+            || !openingContextChats.some((chat) => chat.text === MODEL_CONTEXT_CHAT_TEXT)) {
             throw new Error('NW_SMOKE_OPENING_AHA_NOT_READY');
         }
         const openingCapture = await captureState({
@@ -1069,11 +1096,21 @@ async function runSmoke() {
             echo,
             openingChats: {
                 fixedTicks: openingChatTicks,
-                texts: openingAhaChats.map((chat) => chat.text),
-                uniqueAuthors: new Set(openingAhaChats.map((chat) => chat.author || chat.viewer_id)).size,
-                compatibilityJamoRendered: ['ㅇㅎ', 'ㅇㅎㅎㅇㅎ'].every(
-                    (expected) => openingRenderedTexts.includes(expected)
+                currentBeatId: openingBeatId,
+                greetingTexts: openingAhaChats.map((chat) => chat.text),
+                contextTexts: openingContextChats.map((chat) => chat.text),
+                contextSources: openingContextChats.map((chat) => chat.source),
+                allContextChatsUseCurrentBeat: openingContextChats.every(
+                    (chat) => chat.beatId === openingBeatId
                 ),
+                uniqueAuthors: new Set([
+                    ...openingAhaChats,
+                    ...openingContextChats
+                ].map((chat) => chat.author || chat.viewer_id)).size,
+                compatibilityJamoRendered: openingRenderedTexts.some((value) => (
+                    includesNormalized(value, MODEL_CONTEXT_CHAT_TEXT)
+                        && includesNormalized(value, 'ㄷㄷ')
+                )),
                 conjoiningJamoAbsentFromRenderedText: openingRenderedTexts.every(
                     (value) => !/[\u1100-\u1112\u1161-\u1175]/u.test(value)
                 )
@@ -1152,8 +1189,14 @@ async function runSmoke() {
             && report.echo.unresolvedTokenAbsentFromRenderedTexts
             && report.openingChats.fixedTicks > 0
             && report.openingChats.fixedTicks < MAX_OPENING_CHAT_TICKS
-            && report.openingChats.texts.length === 12
-            && report.openingChats.uniqueAuthors === 12
+            && JSON.stringify(report.openingChats.greetingTexts)
+                === JSON.stringify(['아-하 (아쿠아 하이라는 뜻)'])
+            && report.openingChats.currentBeatId === 'game-opening'
+            && report.openingChats.contextTexts.length >= 3
+            && report.openingChats.contextTexts.includes(MODEL_CONTEXT_CHAT_TEXT)
+            && report.openingChats.contextSources.filter((source) => source === 'fallback').length >= 3
+            && report.openingChats.allContextChatsUseCurrentBeat
+            && report.openingChats.uniqueAuthors >= 4
             && report.openingChats.compatibilityJamoRendered
             && report.openingChats.conjoiningJamoAbsentFromRenderedText
             && report.liveState.fallbackChatCount > 0

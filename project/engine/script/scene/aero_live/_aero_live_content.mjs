@@ -97,6 +97,133 @@ export const AERO_LIVE_VIEWER_IDS = freezeDeep([
 ]);
 
 /**
+ * 모델 응답이 대기 중이거나 소진된 동안 사용할 주제별 안전 맥락 채팅입니다.
+ * 특정 비트의 미래 사건을 스포일러하지 않고 방송 concept 전반에 어울리게 구성합니다.
+ */
+export const AERO_LIVE_TOPIC_AMBIENT_CONTEXTS = freezeDeep({
+    game: [
+        '게임 소리부터 긴장된다',
+        '컨트롤러 꽉 잡았네',
+        '공포게임 분위기 제대로다',
+        '화면 어두워서 더 무섭다',
+        '조작 하나하나 조심해',
+        '비명 나올 준비 완료 ㅋㅋ',
+        '이번 선택은 어디로 갈까',
+        '끝까지 같이 본다'
+    ],
+    cooking: [
+        '피자 만드는 과정 재밌다',
+        '도우 상태 계속 궁금함',
+        '오븐 타이밍이 중요하지',
+        '치즈 비주얼 기대된다',
+        '불 조절만 잘하면 된다',
+        '주방 분위기 좋다',
+        '레시피 메모 중',
+        '완성까지 같이 본다'
+    ],
+    chatting: [
+        '오늘 사연들 집중하게 된다',
+        '이런 근황 토크 좋다',
+        '채팅 분위기 따뜻하네',
+        '사연마다 생각이 많아진다',
+        '천천히 얘기해도 좋아',
+        '오늘 이야기 잘 듣는 중',
+        '다들 마음이 복잡하구나',
+        '이 흐름 오래 듣고 싶다'
+    ],
+    movie: [
+        '같이 보니까 더 재밌다',
+        '영화 분위기 잘 잡혔다',
+        '사운드가 분위기 다 했다',
+        '해석 듣는 맛이 있다',
+        '스포 없이 달리는 중',
+        '다음 장면도 집중한다',
+        '연출 포인트 더 보고 싶다',
+        '크레딧까지 같이 본다'
+    ],
+    issue: [
+        '자료 보면서 듣는 중',
+        '기준이 어디까지인지 궁금',
+        '양쪽 의견 다 들어보자',
+        '근거부터 확인해야지',
+        '표현 자유도 중요한 쟁점',
+        '검열 기준은 공개돼야지',
+        '맥락 빼면 결론 못 내림',
+        '차분하게 토론해보자'
+    ]
+});
+
+/** 활성 사건과 히로인 답변에 연결할 수 있는 상태별 로컬 반응입니다. */
+export const AERO_LIVE_AMBIENT_EVENT_CONTEXTS = freezeDeep({
+    heroResponse: [
+        '답변 바로 이어지네',
+        '말 정리해서 답하는 중',
+        '반응이 확실하네',
+        '답변 듣고 흐름 이해됨',
+        '채팅 보고 답해줬네',
+        '방송 방향 다시 잡는 중',
+        '한마디로 정리됐네',
+        '답변 톤에 다들 집중 중'
+    ],
+    donation: [
+        '후원 내용부터 확인하자',
+        '요구가 꽤 구체적이네',
+        '어떻게 답할지 궁금하다',
+        '금액보다 내용이 더 눈에 띄네',
+        '방송 기준 지키는 게 먼저지',
+        '이건 선택 잘해야겠다',
+        '후원창에 다들 집중 중',
+        '답변 방향이 중요하겠다'
+    ],
+    core: [
+        '핵심 채팅 올라왔다',
+        '저 말은 한번 봐야겠다',
+        '채팅 분위기 잠깐 바뀌었네',
+        '어떻게 처리할지 궁금함',
+        '맥락 보고 판단해야지',
+        '한 줄인데 영향이 크다',
+        '다들 저 채팅 보는 중',
+        '방송 흐름 지키는 게 중요'
+    ],
+    coreResolved: [
+        '핵심 채팅 처리됐네',
+        '이제 방송 흐름으로 돌아오자',
+        '관리 판단 확인했다',
+        '채팅창 다시 집중 중',
+        '처리 끝났으니 계속 보자'
+    ]
+});
+
+/** 범용 내수 밈 대신 반드시 현재 상황을 가리키는 5번째 bridge 문구입니다. */
+export const AERO_LIVE_AMBIENT_CONTEXTUAL_MEMES = freezeDeep({
+    heroResponse: [
+        '방금 답변 바로 나왔다',
+        '지금 답변에 다들 집중',
+        '이 흐름 그대로 가자'
+    ],
+    donation: [
+        '방금 후원 내용 ㄷㄷ',
+        '지금 후원창 집중 중',
+        '이 흐름에 후원 들어오네'
+    ],
+    core: [
+        '방금 핵심 채팅 뭐야 ㄷㄷ',
+        '지금 저 채팅 보는 중',
+        '이 흐름에 핵심 채팅 떴네'
+    ],
+    coreResolved: [
+        '방금 처리 결과 확인함',
+        '지금부터 흐름 다시 가자',
+        '이 흐름으로 계속 보자'
+    ],
+    beat: [
+        '방금 얘기 계속 듣는 중',
+        '지금 방송 흐름 따라가는 중',
+        '이 흐름 그대로 가자'
+    ]
+});
+
+/**
  * AERO LIVE 세로 슬라이스에서 사용하는 다섯 주제와 비트 콘텐츠입니다.
  * 각 주제는 읽기와 대응에 여유가 있는 약 3분의 5개 비트로 구성했습니다.
  */
@@ -220,7 +347,7 @@ const AERO_LIVE_TOPIC_DEFINITIONS = [
                     viewer_id: '버튼연타',
                     tone: 'playful',
                     amount: 3000,
-                    text: '방금 낙하 장면만 열 번 돌려봐도 되나요? 오늘의 명장면 인정?',
+                    text: '방금 망겜 선언이랑 비명 장면만 열 번 돌려봐도 되나요? 오늘의 명장면 인정?',
                     appropriateInstructions: ['accept', 'joy', 'fun'],
                     heroResponses: {
                         accept: '좋아요, 오늘의 명장면으로 인정할게요. 딱 세 번까지만 돌려봐요!',
@@ -322,7 +449,7 @@ const AERO_LIVE_TOPIC_DEFINITIONS = [
                 effects: { engagement: 6, opinion: 3 },
                 fallbackChats: [
                     { viewer_id: '청결검사반', sentiment: 'neutral', text: '모양보다 맛이지' },
-                    { viewer_id: '물방울77', sentiment: 'positive', text: '모양은 조금 삐뚤어도 정말 맛있어 보여' },
+                    { viewer_id: '물방울77', sentiment: 'positive', text: '토마토랑 치즈 조합 좋다' },
                     { viewer_id: '민트수저', sentiment: 'positive', text: '치즈 잘 녹았다' }
                 ],
                 coreChat: {
@@ -529,7 +656,7 @@ const AERO_LIVE_TOPIC_DEFINITIONS = [
                 durationSeconds: 23,
                 effects: { engagement: 5 },
                 fallbackChats: [
-                    { viewer_id: '결말수집가', sentiment: 'negative', text: '꿈 깨고 영화에나 집중해' },
+                    { viewer_id: '결말수집가', sentiment: 'neutral', text: '방송에도 저런 효과 넣으면 재밌겠다' },
                     { viewer_id: '필름기포', sentiment: 'positive', text: '마법 그래픽 멋있다' },
                     { viewer_id: '파란커튼', sentiment: 'neutral', text: '수술 장면 잘 만들었네' }
                 ],
@@ -580,7 +707,7 @@ const AERO_LIVE_TOPIC_DEFINITIONS = [
                 effects: { engagement: 4, opinion: 3 },
                 fallbackChats: [
                     { viewer_id: '파란커튼', sentiment: 'positive', text: '나도 그 장면 슬펐어' },
-                    { viewer_id: '필름기포', sentiment: 'positive', text: '사랑보다 세상을 선택했다는 해석이 좋다' },
+                    { viewer_id: '필름기포', sentiment: 'positive', text: '그 선택 때문에 여운이 더 크다' },
                     { viewer_id: '결말수집가', sentiment: 'neutral', text: '이어지지 않아서 더 기억남' }
                 ],
                 coreChat: {
@@ -659,7 +786,7 @@ const AERO_LIVE_TOPIC_DEFINITIONS = [
                 effects: { engagement: 6 },
                 fallbackChats: [
                     { viewer_id: '팩트기포', sentiment: 'neutral', text: '기준부터 공개해야지' },
-                    { viewer_id: '불꽃제목', sentiment: 'negative', text: '그런 만화는 내용 자체가 문제잖아' },
+                    { viewer_id: '불꽃제목', sentiment: 'neutral', text: '어디까지 문제로 볼지가 쟁점' },
                     { viewer_id: '양쪽구름', sentiment: 'neutral', text: '확대 적용이 걱정되긴 함' }
                 ],
                 coreChat: {
@@ -710,7 +837,7 @@ const AERO_LIVE_TOPIC_DEFINITIONS = [
                 fallbackChats: [
                     { viewer_id: '팩트기포', sentiment: 'neutral', text: '선택권 문제지' },
                     { viewer_id: '양쪽구름', sentiment: 'neutral', text: '표현 자유도 한계는 있지' },
-                    { viewer_id: '불꽃제목', sentiment: 'neutral', text: '모방범죄 가능성은 어떻게 봐요?' }
+                    { viewer_id: '불꽃제목', sentiment: 'neutral', text: '작품과 범죄 책임은 나눠봐야지' }
                 ],
                 coreChat: {
                     id: 'issue-core-context',
@@ -736,7 +863,7 @@ const AERO_LIVE_TOPIC_DEFINITIONS = [
                     viewer_id: '조회수폭풍',
                     tone: 'negative',
                     amount: 13000,
-                    text: '제목을 “축제 운영의 추악한 진실”로 바꾸면 조회수 두 배 갑니다. 지금 바꿔요!',
+                    text: '제목을 “인터넷 만화 검열의 추악한 진실”로 바꾸면 조회수 두 배 갑니다. 지금 바꿔요!',
                     appropriateInstructions: ['deny', 'anger'],
                     heroResponses: {
                         accept: '좋아요. 조회수를 위해 지금 바로 더 자극적인 제목으로 바꿀게요.',
@@ -763,6 +890,23 @@ export const AERO_LIVE_TOPICS = freezeDeep(AERO_LIVE_TOPIC_DEFINITIONS.map((topi
         }))
     }))
 })));
+
+/**
+ * 주제에 배정된 15개의 제품 시청자 ID 복사본을 반환합니다.
+ * @param {string} topicId - 방송 주제 ID입니다.
+ * @param {ReadonlyArray<object>} [topics=AERO_LIVE_TOPICS] - ID 배정 순서를 정할 주제 목록입니다.
+ * @returns {string[]} 알 수 없는 주제면 빈 배열, 그 외에는 해당 주제의 ID 15개입니다.
+ */
+export function getAeroLiveTopicViewerIds(topicId, topics = AERO_LIVE_TOPICS) {
+    const topicIndex = Array.isArray(topics)
+        ? topics.findIndex((topic) => topic?.id === topicId)
+        : -1;
+    if (topicIndex < 0) {
+        return [];
+    }
+    const startIndex = topicIndex * 15;
+    return AERO_LIVE_VIEWER_IDS.slice(startIndex, startIndex + 15);
+}
 
 /**
  * 씬의 주제 선택 화면에 필요한 가벼운 요약 목록을 반환합니다.

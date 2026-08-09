@@ -57,18 +57,19 @@ export class AeroLiveAiService {
 
         const viewerIds = this.#resolveViewerIds(context);
         const modelId = this.#resolveModelId('chat');
+        const validationContext = { ...context, viewerIds };
+        let requestBody;
+        try {
+            requestBody = this.contract.buildChatRequestBody(validationContext);
+        } catch (error) {
+            this.#setIdleStatus('로컬 폴백');
+            this.#reportSafeWarning('일반 채팅 요청 조립', error);
+            return { chats: [], source: 'fallback' };
+        }
         const cacheKey = this.#buildCacheKey('chat', {
-            topic: context?.topic,
-            heroText: context?.heroText,
-            mood: context?.mood,
-            opinion: context?.opinion,
-            viewerIds,
-            chatSlots: Array.isArray(context?.fallbackChats)
-                ? context.fallbackChats.slice(0, Number(this.rules.CHAT_BATCH_SIZE) || 3).map((chat) => ({
-                    viewerId: chat?.viewerId || chat?.viewer_id || chat?.nickname || '',
-                    sentiment: chat?.sentiment || 'neutral'
-                }))
-                : []
+            // 정규화된 JSON 데이터 전체를 키에 넣어 beat/event/reference/
+            // fallback 본문 중 하나라도 다르면 예전 배치를 재사용하지 않습니다.
+            promptData: requestBody.contents[0].parts[0].text
         }, modelId);
         const cached = this.chatCache.get(cacheKey);
         if (cached) {
@@ -80,7 +81,12 @@ export class AeroLiveAiService {
         return this.#enqueueRequest({
             lane: 'chat',
             modelId,
-            execute: (job) => this.#executeChatRequest(job, context, viewerIds, cacheKey),
+            execute: (job) => this.#executeChatRequest(
+                job,
+                requestBody,
+                validationContext,
+                cacheKey
+            ),
             discardedResult: () => this.#buildDiscardedChatResult(),
             overflowResult: () => ({ chats: [], source: 'fallback', overflow: true })
         });
@@ -260,13 +266,13 @@ export class AeroLiveAiService {
     /**
      * 일반 채팅 공급자 요청 하나를 실행합니다.
      * @param {object} job - 활성 FIFO 작업입니다.
-     * @param {object} context - 비트 맥락입니다.
-     * @param {string[]} viewerIds - 게임이 허용한 시청자 ID입니다.
+     * @param {object} requestBody - 큐 진입 전 고정한 Gemini 요청 본문입니다.
+     * @param {object} validationContext - 응답 슬롯을 검증할 방송 맥락입니다.
      * @param {string} cacheKey - 채팅 캐시 키입니다.
      * @returns {Promise<object>} 채팅 생성 결과입니다.
      * @private
      */
-    async #executeChatRequest(job, context, viewerIds, cacheKey) {
+    async #executeChatRequest(job, requestBody, validationContext, cacheKey) {
         const cached = this.chatCache.get(cacheKey);
         if (cached) {
             this.#touchCacheEntry(cacheKey, cached);
@@ -275,19 +281,15 @@ export class AeroLiveAiService {
         }
 
         try {
-            const requestBody = this.contract.buildChatRequestBody({
-                ...context,
-                viewerIds
-            });
             const responseText = await this.#requestGemini(requestBody, job.modelId);
             if (!this.#isJobCurrent(job)) {
                 return job.discardedResult();
             }
 
-            const validated = this.contract.parseChatResponse(responseText, {
-                ...context,
-                viewerIds
-            });
+            const validated = this.contract.parseChatResponse(
+                responseText,
+                validationContext
+            );
             if (!this.#isJobCurrent(job)) {
                 return job.discardedResult();
             }

@@ -5,8 +5,12 @@ import { getDelta } from 'engine/time_handler.js';
 import { getKeyboardCodeInput, getMouseInput, isMousePressing } from 'input/input_system.js';
 import { UIPool, releaseUIItem } from 'ui/_ui_pool.js';
 import {
+    AERO_LIVE_AMBIENT_CONTEXTUAL_MEMES,
+    AERO_LIVE_AMBIENT_EVENT_CONTEXTS,
     AERO_LIVE_DEFAULT_TIMING,
-    AERO_LIVE_VIEWER_IDS
+    AERO_LIVE_TOPIC_AMBIENT_CONTEXTS,
+    AERO_LIVE_VIEWER_IDS,
+    getAeroLiveTopicViewerIds
 } from './_aero_live_content.mjs';
 import { AeroLiveCampaign } from './_aero_live_campaign.mjs';
 import { AeroLiveRuntime } from './_aero_live_runtime.mjs';
@@ -44,38 +48,7 @@ const AMBIENT_CHAT_INTERVAL_SECONDS = 1.25;
 const AMBIENT_EVENT_TRANSITION_IDLE_SECONDS = 0.6;
 const AMBIENT_RECENT_AUTHOR_WINDOW = 9;
 const AMBIENT_INITIAL_AHA_TEXTS = Object.freeze([
-    '아하',
-    '아하',
-    'ㅇㅎ',
-    '아-하 (아쿠아 하이라는 뜻)',
-    '아~하',
-    'ㅇㅎㅎㅇㅎ',
-    '아하',
-    '아하',
-    'ㅇㅎ',
-    '아-하 (아쿠아 하이라는 뜻)',
-    '아~하',
-    'ㅇㅎㅎㅇㅎ'
-]);
-const AMBIENT_BRIDGE_TEXTS = Object.freeze([
-    '뭣',
-    '헉',
-    'ㄹㅇ인가',
-    '오늘 폼 좋다 ㅋㅋ',
-    '그건...',
-    '너 좋다 너 잘한다',
-    '대회 나감?',
-    '심어주고~',
-    '대화가 된다',
-    '아쉬운 거지',
-    'ㅋㅋㅋㅋ',
-    '이건 인정',
-    '다음 장면 드가자',
-    '방금 뭐였지?',
-    '오 이 흐름 좋다',
-    '잠깐만 다시 보자',
-    '채팅도 집중 중',
-    '다음 얘기 궁금함'
+    '아-하 (아쿠아 하이라는 뜻)'
 ]);
 const CORE_ACTIONS = Object.freeze([
     Object.freeze({ id: 'kick', label: '강퇴', color: COLORS.NEGATIVE }),
@@ -237,9 +210,14 @@ export class AeroLiveScene extends BaseScene {
         this.pendingEchoCallback = null;
         this.ambientChatQueue = [];
         this.ambientChatBeatId = null;
+        this.ambientChatTopicId = null;
+        this.ambientBeatReferenceTexts = [];
         this.ambientChatSecondsRemaining = 0;
         this.ambientBridgeSequence = 0;
+        this.ambientTransitionSequence = 0;
         this.ambientReservedViewerIds = new Set();
+        this.ambientPendingModelChats = new Set();
+        this.ambientModelRequestPending = false;
         this.keyLatch = new Map();
         this.buttons = [];
         this.topicButtons = [];
@@ -1459,6 +1437,36 @@ export class AeroLiveScene extends BaseScene {
     }
 
     /**
+     * 일반 채팅 맥락에 포함할 현재 핵심 채팅 또는 후원 사건을 정리합니다.
+     * @returns {{id:string,kind:'core'|'donation',text:string,tone:string}|null} 현재 사건입니다.
+     * @private
+     */
+    #getAmbientActiveEvent() {
+        const donation = this.snapshot?.activeDonation;
+        const donationId = safeText(donation?.id, 80);
+        if (donation && donationId) {
+            return {
+                id: donationId,
+                kind: 'donation',
+                text: safeText(donation.text, 180),
+                tone: safeText(donation.tone, 24) || 'neutral'
+            };
+        }
+
+        const coreChat = this.snapshot?.activeCoreChat;
+        const coreChatId = safeText(coreChat?.coreChatId || coreChat?.id, 80);
+        if (coreChat && coreChatId) {
+            return {
+                id: coreChatId,
+                kind: 'core',
+                text: safeText(coreChat.text, 180),
+                tone: safeText(coreChat.sentiment, 24) || 'neutral'
+            };
+        }
+        return null;
+    }
+
+    /**
      * beat 시작 0.6초 뒤부터 안전 폴백과 AI 채팅을 1.25초 간격 큐로 방출합니다.
      * @param {object} event - beat-started 런타임 이벤트입니다.
      * @returns {Promise<void>} 비동기 채팅 생성 완료 Promise입니다.
@@ -1466,28 +1474,63 @@ export class AeroLiveScene extends BaseScene {
      */
     async #generateAmbientChats(event) {
         const requestGeneration = this.asyncGeneration;
-        const beatId = event.beatId;
+        const beatId = safeText(event?.beatId, 80);
         const fallbackChats = Array.isArray(event.fallbackChats) ? event.fallbackChats : [];
         const modelText = (value, maxLength = 240) => safeText(
             replaceAeroLivePlayerNameForModel(value, this.playerName),
             maxLength
         );
+        const topicId = modelText(event.topic?.id || this.snapshot?.topic?.id || '', 80);
+        const topicTitle = modelText(event.topic?.title || topicId, 80);
+        const topicConcept = modelText(event.topic?.concept || this.snapshot?.topic?.concept || '', 180);
+        const beatIndex = Math.max(0, Math.floor(finiteNumber(
+            event.beatIndex,
+            finiteNumber(this.snapshot?.currentBeat?.index, 0)
+        )));
+        const beatCount = Math.max(1, Math.floor(finiteNumber(
+            event.beatCount,
+            finiteNumber(this.snapshot?.currentBeat?.total, 1)
+        )));
+        // fallback 작성자를 슬롯 힌트로 넘기면 계약이 첫 모델 슬롯에 다시 고정하므로,
+        // 본문·감정만 맥락으로 전달하고 작성자 순서는 viewerIds가 전담합니다.
         const modelFallbackChats = fallbackChats.map((chat) => ({
-            viewerId: modelText(chat?.viewerId || chat?.viewer_id, 24),
             sentiment: safeText(chat?.sentiment, 24),
             text: modelText(chat?.text, 180)
         }));
+        const activeEvent = this.#getAmbientActiveEvent();
+        const contextEventId = activeEvent?.id || null;
+        const modelActiveEvent = activeEvent
+            ? {
+                id: modelText(activeEvent.id, 80),
+                kind: modelText(activeEvent.kind, 24),
+                text: modelText(activeEvent.text, 180),
+                tone: modelText(activeEvent.tone, 24)
+            }
+            : null;
+        this.ambientChatTopicId = topicId;
+        this.ambientBeatReferenceTexts = fallbackChats
+            .map((chat) => safeText(chat?.text, 180))
+            .filter(Boolean);
+        const initialAhaChats = this.#createInitialAhaBurst(event, fallbackChats);
         const context = {
-            topic: modelText(event.topic?.title || event.topic?.id || '', 80),
+            topic: topicTitle,
+            topicId,
+            topicTitle,
+            topicConcept,
+            beatId,
+            beatIndex,
+            beatCount,
             heroText: modelText(event.heroText || '', 240),
             mood: modelText(event.mood || '', 60),
+            activeEvent: modelActiveEvent,
+            referenceChats: modelFallbackChats,
             opinion: this.snapshot?.metrics?.opinion,
             fallbackChats: modelFallbackChats,
-            viewerIds: this.#getViewerIds(fallbackChats)
+            viewerIds: this.#getViewerIds(fallbackChats, initialAhaChats)
         };
 
         const reservedViewerIds = new Set(context.viewerIds);
-        const initialAhaChats = this.#createInitialAhaBurst(event, reservedViewerIds);
+        const pendingModelChats = new Set();
         const fallbackQueue = fallbackChats.map((chat) => ({ ...chat, source: 'fallback' }));
         const echoCallback = this.#takePendingEchoCallback(event, reservedViewerIds);
         if (echoCallback) {
@@ -1501,33 +1544,51 @@ export class AeroLiveScene extends BaseScene {
         ];
         this.ambientChatSecondsRemaining = AMBIENT_CHAT_START_DELAY_SECONDS;
         this.ambientBridgeSequence = 0;
+        this.ambientTransitionSequence = 0;
         this.ambientReservedViewerIds = reservedViewerIds;
+        this.ambientPendingModelChats = pendingModelChats;
+        this.ambientModelRequestPending = true;
 
         try {
             const generated = await this.aiService.generateChatBatch(context);
             if (this.isDestroyed
                 || requestGeneration !== this.asyncGeneration
                 || this.snapshot?.status !== 'live'
-                || this.snapshot?.currentBeat?.id !== beatId) {
+                || this.snapshot?.currentBeat?.id !== beatId
+                || (contextEventId
+                    && this.#getAmbientActiveEvent()?.id !== contextEventId)) {
                 return;
             }
 
             const modelChats = Array.isArray(generated?.chats) ? generated.chats : [];
             if (modelChats.length > 0) {
-                this.ambientChatQueue.push(...modelChats.slice(0, 24).map((chat) => ({
+                const queuedModelChats = modelChats.slice(0, 24).map((chat) => ({
                     ...chat,
                     text: this.#toPlayerNameTemplate(
                         chat?.text,
                         AERO_CONSTANTS.AI.GENERATED_CHAT_MAX_CHARS
                     ),
-                    source: generated.source || 'model'
-                })));
+                    source: generated.source || 'model',
+                    contextEventId
+                }));
+                for (const chat of queuedModelChats) {
+                    pendingModelChats.add(chat);
+                }
+                this.ambientChatQueue.push(...queuedModelChats);
             }
         } catch (error) {
             if (this.isDestroyed || requestGeneration !== this.asyncGeneration) {
                 return;
             }
             console.warn('[AeroLiveScene] 일반 채팅 폴백', error);
+        } finally {
+            if (this.ambientPendingModelChats === pendingModelChats) {
+                this.ambientModelRequestPending = false;
+            }
+            this.#releaseAmbientViewerReservations(
+                reservedViewerIds,
+                pendingModelChats
+            );
         }
     }
 
@@ -1583,14 +1644,259 @@ export class AeroLiveScene extends BaseScene {
     }
 
     /**
-     * 방송 첫 비트에만 모델 입력과 무관한 `아하` 변형 채팅을 큐 선두에 채웁니다.
-     * 모델 슬롯, 최근 화면 작성자와 강퇴 작성자를 피해 서로 다른 제품 시청자 ID를 고릅니다.
+     * 알려진 주제에서는 해당 주제의 15개 ID만 반환합니다.
+     * 사용자 정의 주제에만 전체 제품 ID를 안전 폴백으로 사용합니다.
+     * @param {string} [topicId] - 우선할 주제 ID입니다.
+     * @returns {string[]} 플레이어 닉네임과 겹치지 않는 결정론적 ID 풀입니다.
+     * @private
+     */
+    #getAmbientViewerPool(topicId = this.ambientChatTopicId || this.snapshot?.topic?.id) {
+        const topicViewerIds = getAeroLiveTopicViewerIds(safeText(topicId, 80))
+            .map((viewerId) => safeText(viewerId, 24))
+            .filter(Boolean);
+        const viewerIds = topicViewerIds.length > 0
+            ? topicViewerIds
+            : (Array.isArray(AERO_LIVE_VIEWER_IDS) ? AERO_LIVE_VIEWER_IDS : [])
+                .map((viewerId) => safeText(viewerId, 24))
+                .filter(Boolean);
+        return viewerIds.filter((viewerId) => (
+            !this.playerName
+            || !replaceAeroLivePlayerNameForModel(
+                viewerId,
+                this.playerName
+            ).includes(AERO_LIVE_PLAYER_NAME_TOKEN)
+        ));
+    }
+
+    /**
+     * 히로인 답변, 후원, 핵심 채팅, 현재 비트 순서로 bridge 맥락을 고릅니다.
+     * @returns {'heroResponse'|'donation'|'core'|'beat'} 현재 최우선 맥락입니다.
+     * @private
+     */
+    #resolveAmbientContextKind() {
+        if (this.heroResponseText && this.heroResponseSecondsRemaining > 0) {
+            return 'heroResponse';
+        }
+        if (this.snapshot?.activeDonation) {
+            return 'donation';
+        }
+        if (this.snapshot?.activeCoreChat) {
+            return 'core';
+        }
+        return 'beat';
+    }
+
+    /**
+     * 로컬 맥락 종류에 맞는 정적 문구 풀을 반환합니다.
+     * @param {'heroResponse'|'donation'|'core'|'coreResolved'|'beat'} kind - 맥락 종류입니다.
+     * @returns {string[]} 최근 중복 검사에 사용할 정리된 문구입니다.
+     * @private
+     */
+    #getAmbientContextTexts(kind) {
+        if (kind !== 'beat') {
+            return (Array.isArray(AERO_LIVE_AMBIENT_EVENT_CONTEXTS?.[kind])
+                ? AERO_LIVE_AMBIENT_EVENT_CONTEXTS[kind]
+                : [])
+                .map((text) => safeText(text, 180))
+                .filter(Boolean);
+        }
+        const topicId = safeText(
+            this.ambientChatTopicId || this.snapshot?.topic?.id,
+            80
+        );
+        const topicTexts = Array.isArray(AERO_LIVE_TOPIC_AMBIENT_CONTEXTS?.[topicId])
+            ? AERO_LIVE_TOPIC_AMBIENT_CONTEXTS[topicId]
+            : [];
+        return [...new Set([
+            ...this.ambientBeatReferenceTexts,
+            ...topicTexts
+        ].map((text) => safeText(text, 180)).filter(Boolean))];
+    }
+
+    /**
+     * 최근 9행과 강퇴 작성자는 반드시 피하고 현재 주제 ID 안에서만 선택합니다.
+     * 모델 예약 ID는 우선 피하되, 남은 후보가 없으면 방송을 멈추거나 타 주제로
+     * 넘어가지 않고 같은 주제의 안전한 예약 ID를 사용합니다.
+     * @param {number} sequence - 현재 로컬 bridge 순번입니다.
+     * @returns {string|null} 사용할 시청자 ID입니다.
+     * @private
+     */
+    #selectAmbientViewerId(sequence) {
+        const viewerPool = this.#getAmbientViewerPool();
+        if (viewerPool.length === 0) {
+            return null;
+        }
+        const recentAuthors = new Set((Array.isArray(this.snapshot?.chats) ? this.snapshot.chats : [])
+            .slice(-AMBIENT_RECENT_AUTHOR_WINDOW)
+            .map((chat) => safeText(chat?.viewer_id || chat?.author, 24))
+            .filter(Boolean));
+        const bannedAuthors = new Set((Array.isArray(this.snapshot?.bannedAuthors)
+            ? this.snapshot.bannedAuthors
+            : [])
+            .map((author) => safeText(author, 24))
+            .filter(Boolean));
+        const reservedViewerIds = this.ambientReservedViewerIds instanceof Set
+            ? this.ambientReservedViewerIds
+            : new Set();
+        const rotate = (pool, offset) => pool.length > 0
+            ? [...pool.slice(offset % pool.length), ...pool.slice(0, offset % pool.length)]
+            : [];
+        const candidates = rotate(viewerPool, sequence * 7);
+        return candidates.find((candidate) => !recentAuthors.has(candidate)
+            && !bannedAuthors.has(candidate)
+            && !reservedViewerIds.has(candidate))
+            || candidates.find((candidate) => !recentAuthors.has(candidate)
+                && !bannedAuthors.has(candidate))
+            || null;
+    }
+
+    /**
+     * 지정한 맥락의 로컬 채팅 한 건을 만듭니다. 매 5번째 항목은 현재를 직접
+     * 가리키는 contextual meme을 사용하고 나머지는 정적 상황 문구를 사용합니다.
+     * @param {{kind?:string,eventId?:string|null,source?:string,advanceBridgeSequence?:boolean}} [options={}] - 생성 옵션입니다.
+     * @returns {object|null} 다음 cadence 슬롯에 넣을 채팅입니다.
+     * @private
+     */
+    #createAmbientContextChat(options = {}) {
+        const kind = safeText(options.kind, 24) || this.#resolveAmbientContextKind();
+        const isBridge = options.advanceBridgeSequence !== false;
+        const sequence = isBridge
+            ? this.ambientBridgeSequence
+            : this.ambientTransitionSequence;
+        const viewerId = this.#selectAmbientViewerId(sequence);
+        if (!viewerId) {
+            return null;
+        }
+
+        const contextTexts = this.#getAmbientContextTexts(kind);
+        const beatContextTexts = this.#getAmbientContextTexts('beat');
+        const resolvedContextTexts = contextTexts.length > 0
+            ? contextTexts
+            : beatContextTexts;
+        const memeKey = Object.prototype.hasOwnProperty.call(
+            AERO_LIVE_AMBIENT_CONTEXTUAL_MEMES,
+            kind
+        )
+            ? kind
+            : 'beat';
+        const contextualMemes = (Array.isArray(AERO_LIVE_AMBIENT_CONTEXTUAL_MEMES[memeKey])
+            ? AERO_LIVE_AMBIENT_CONTEXTUAL_MEMES[memeKey]
+            : [])
+            .map((text) => safeText(text, 180))
+            .filter(Boolean);
+        const useContextualMeme = isBridge && (sequence + 1) % 5 === 0;
+        const preferredTexts = useContextualMeme ? contextualMemes : resolvedContextTexts;
+        const candidateTexts = preferredTexts.length > 0
+            ? preferredTexts
+            : (useContextualMeme ? resolvedContextTexts : contextualMemes);
+        if (candidateTexts.length === 0) {
+            return null;
+        }
+
+        const recentTexts = new Set((Array.isArray(this.snapshot?.chats) ? this.snapshot.chats : [])
+            .slice(-AMBIENT_RECENT_AUTHOR_WINDOW)
+            .map((chat) => safeText(chat?.text, 180))
+            .filter(Boolean));
+        const beatIndex = Math.max(0, Math.floor(finiteNumber(
+            this.snapshot?.currentBeat?.index,
+            0
+        )));
+        const textStart = ((beatIndex * 3) + sequence) % candidateTexts.length;
+        let text = candidateTexts[textStart];
+        for (let offset = 0; offset < candidateTexts.length; offset += 1) {
+            const candidate = candidateTexts[(textStart + offset) % candidateTexts.length];
+            if (!recentTexts.has(candidate)) {
+                text = candidate;
+                break;
+            }
+        }
+
+        if (isBridge) {
+            this.ambientBridgeSequence += 1;
+        } else {
+            this.ambientTransitionSequence += 1;
+        }
+        return {
+            viewer_id: viewerId,
+            sentiment: 'neutral',
+            text,
+            source: safeText(options.source, 24) || 'bridge-fallback',
+            contextEventId: safeText(options.eventId, 80) || null
+        };
+    }
+
+    /**
+     * 사건 전환 반응을 즉시 방출하지 않고 현재 큐의 다음 cadence 슬롯 앞으로 넣습니다.
+     * @param {'core'|'donation'|'heroResponse'|'coreResolved'} kind - 전환 종류입니다.
+     * @param {string|null} [eventId=null] - 활성 사건 ID입니다.
+     * @private
+     */
+    #queueAmbientTransitionChat(kind, eventId = null) {
+        if (!this.ambientChatBeatId
+            || this.snapshot?.currentBeat?.id !== this.ambientChatBeatId) {
+            return;
+        }
+        const chat = this.#createAmbientContextChat({
+            kind,
+            eventId,
+            source: 'event-context',
+            advanceBridgeSequence: false
+        });
+        if (chat) {
+            this.ambientChatQueue.unshift(chat);
+        }
+    }
+
+    /**
+     * 해결되거나 취소된 사건을 전제로 생성된 대기 채팅을 제거합니다.
+     * @param {string} eventId - 종료된 핵심 채팅 또는 후원 ID입니다.
+     * @private
+     */
+    #discardAmbientEventChats(eventId) {
+        const safeEventId = safeText(eventId, 80);
+        if (!safeEventId) {
+            return;
+        }
+        this.ambientChatQueue = this.ambientChatQueue.filter((chat) => {
+            const keep = safeText(chat?.contextEventId, 80) !== safeEventId;
+            if (!keep) {
+                this.ambientPendingModelChats.delete(chat);
+            }
+            return keep;
+        });
+        this.#releaseAmbientViewerReservations();
+    }
+
+    /**
+     * 현재 모델 배치의 마지막 대기 항목이 사라졌을 때만 시청자 예약을 풉니다.
+     * 이전 비트의 늦은 Promise가 새 비트 예약을 지우지 못하도록 Set identity도 확인합니다.
+     * @param {Set<string>} [reservedViewerIds=this.ambientReservedViewerIds] - 요청별 예약 ID입니다.
+     * @param {Set<object>} [pendingModelChats=this.ambientPendingModelChats] - 큐에 남은 모델 객체입니다.
+     * @private
+     */
+    #releaseAmbientViewerReservations(
+        reservedViewerIds = this.ambientReservedViewerIds,
+        pendingModelChats = this.ambientPendingModelChats
+    ) {
+        if (this.ambientReservedViewerIds !== reservedViewerIds
+            || this.ambientPendingModelChats !== pendingModelChats
+            || this.ambientModelRequestPending
+            || pendingModelChats.size > 0) {
+            return;
+        }
+        reservedViewerIds.clear();
+    }
+
+    /**
+     * 방송 첫 비트에만 모델 입력과 무관한 `아하` 인사 한 건을 큐 선두에 채웁니다.
+     * 최근 화면·강퇴·현재 fallback 작성자를 피해 현재 주제의 제품 ID를 고릅니다.
+     * 이 작성자는 뒤이어 계산하는 모델 슬롯에서도 제외합니다.
      * @param {object} event - beat-started 런타임 이벤트입니다.
-     * @param {Set<string>} reservedViewerIds - 모델 배치에 예약한 시청자 ID입니다.
+     * @param {Array<object>} fallbackChats - 바로 뒤에 방출할 현재 비트 fallback입니다.
      * @returns {object[]} 결정론적인 로컬 오프닝 채팅 목록입니다.
      * @private
      */
-    #createInitialAhaBurst(event, reservedViewerIds) {
+    #createInitialAhaBurst(event, fallbackChats) {
         if (Math.floor(finiteNumber(event?.beatIndex, -1)) !== 0) {
             return [];
         }
@@ -1604,19 +1910,15 @@ export class AeroLiveScene extends BaseScene {
             : [])
             .map((author) => safeText(author, 24))
             .filter(Boolean));
+        const fallbackAuthors = new Set((Array.isArray(fallbackChats) ? fallbackChats : [])
+            .map((chat) => safeText(chat?.viewer_id || chat?.viewerId || chat?.author, 24))
+            .filter(Boolean));
         const excludedAuthors = new Set([
             ...recentAuthors,
             ...bannedAuthors,
-            ...(reservedViewerIds instanceof Set ? reservedViewerIds : [])
+            ...fallbackAuthors
         ]);
-        const viewerPool = (Array.isArray(AERO_LIVE_VIEWER_IDS) ? AERO_LIVE_VIEWER_IDS : [])
-            .map((viewerId) => safeText(viewerId, 24))
-            .filter((viewerId) => viewerId
-                && (!this.playerName
-                    || !replaceAeroLivePlayerNameForModel(
-                        viewerId,
-                        this.playerName
-                    ).includes(AERO_LIVE_PLAYER_NAME_TOKEN)));
+        const viewerPool = this.#getAmbientViewerPool(event?.topic?.id);
         const chats = [];
         for (const viewerId of viewerPool) {
             if (chats.length >= AMBIENT_INITIAL_AHA_TEXTS.length) {
@@ -1651,7 +1953,11 @@ export class AeroLiveScene extends BaseScene {
         this.ambientChatSecondsRemaining -= Math.max(0, finiteNumber(deltaSeconds, 0));
         let emitted = false;
         while (this.ambientChatSecondsRemaining <= 0) {
-            const chat = this.ambientChatQueue.shift() || this.#createAmbientBridgeChat();
+            const queuedChat = this.ambientChatQueue.shift();
+            if (queuedChat && this.ambientPendingModelChats.delete(queuedChat)) {
+                this.#releaseAmbientViewerReservations();
+            }
+            const chat = queuedChat || this.#createAmbientBridgeChat();
             if (!chat) {
                 this.ambientChatSecondsRemaining = AMBIENT_CHAT_INTERVAL_SECONDS;
                 break;
@@ -1667,72 +1973,15 @@ export class AeroLiveScene extends BaseScene {
 
     /**
      * AI 배치가 아직 대기 중이거나 모두 소진된 동안 안전한 일반 채팅 한 건을 만듭니다.
-     * 최근 화면의 작성자와 강퇴된 작성자를 피하고 제품 소유 ID만 사용합니다.
+     * 현재 답변·사건·비트 맥락을 우선하며 범용 무관 문구는 사용하지 않습니다.
      * @returns {object|null} 런타임에 추가할 결정론적 보충 채팅입니다.
      * @private
      */
     #createAmbientBridgeChat() {
-        const viewerPool = (Array.isArray(AERO_LIVE_VIEWER_IDS) ? AERO_LIVE_VIEWER_IDS : [])
-            .map((viewerId) => safeText(viewerId, 24))
-            .filter((viewerId) => viewerId
-                && (!this.playerName
-                    || !replaceAeroLivePlayerNameForModel(
-                        viewerId,
-                        this.playerName
-                    ).includes(AERO_LIVE_PLAYER_NAME_TOKEN)));
-        if (viewerPool.length === 0 || AMBIENT_BRIDGE_TEXTS.length === 0) {
-            return null;
-        }
-
-        const recentAuthors = new Set((Array.isArray(this.snapshot?.chats) ? this.snapshot.chats : [])
-            .slice(-AMBIENT_RECENT_AUTHOR_WINDOW)
-            .map((chat) => safeText(chat?.viewer_id || chat?.author, 24))
-            .filter(Boolean));
-        const recentTexts = new Set((Array.isArray(this.snapshot?.chats) ? this.snapshot.chats : [])
-            .slice(-AMBIENT_RECENT_AUTHOR_WINDOW)
-            .map((chat) => safeText(chat?.text, 180))
-            .filter(Boolean));
-        const bannedAuthors = new Set((Array.isArray(this.snapshot?.bannedAuthors)
-            ? this.snapshot.bannedAuthors
-            : [])
-            .map((author) => safeText(author, 24))
-            .filter(Boolean));
-        const reservedViewerIds = this.ambientReservedViewerIds instanceof Set
-            ? this.ambientReservedViewerIds
-            : new Set();
-        const beatIndex = Math.max(0, Math.floor(finiteNumber(this.snapshot?.currentBeat?.index, 0)));
-        const sequence = this.ambientBridgeSequence;
-        const poolStart = ((beatIndex * 15) + (sequence * 7)) % viewerPool.length;
-        let viewerId = null;
-        for (let offset = 0; offset < viewerPool.length; offset += 1) {
-            const candidate = viewerPool[(poolStart + offset) % viewerPool.length];
-            if (!recentAuthors.has(candidate)
-                && !bannedAuthors.has(candidate)
-                && !reservedViewerIds.has(candidate)) {
-                viewerId = candidate;
-                break;
-            }
-        }
-        if (!viewerId) {
-            return null;
-        }
-
-        this.ambientBridgeSequence += 1;
-        const textStart = ((beatIndex * 5) + sequence) % AMBIENT_BRIDGE_TEXTS.length;
-        let text = AMBIENT_BRIDGE_TEXTS[textStart];
-        for (let offset = 0; offset < AMBIENT_BRIDGE_TEXTS.length; offset += 1) {
-            const candidate = AMBIENT_BRIDGE_TEXTS[(textStart + offset) % AMBIENT_BRIDGE_TEXTS.length];
-            if (!recentTexts.has(candidate)) {
-                text = candidate;
-                break;
-            }
-        }
-        return {
-            viewer_id: viewerId,
-            sentiment: sequence % 3 === 0 ? 'positive' : 'neutral',
-            text,
+        return this.#createAmbientContextChat({
+            kind: this.#resolveAmbientContextKind(),
             source: 'bridge-fallback'
-        };
+        });
     }
 
     /**
@@ -1755,9 +2004,14 @@ export class AeroLiveScene extends BaseScene {
     #clearAmbientChatQueue() {
         this.ambientChatQueue = [];
         this.ambientChatBeatId = null;
+        this.ambientChatTopicId = null;
+        this.ambientBeatReferenceTexts = [];
         this.ambientChatSecondsRemaining = 0;
         this.ambientBridgeSequence = 0;
+        this.ambientTransitionSequence = 0;
         this.ambientReservedViewerIds = new Set();
+        this.ambientPendingModelChats = new Set();
+        this.ambientModelRequestPending = false;
         this.pendingEchoCallback = null;
     }
 
@@ -1790,6 +2044,10 @@ export class AeroLiveScene extends BaseScene {
         if (event.type === 'core-chat-started') {
             this.intentContextRevision += 1;
             this.selectedCoreChatId = null;
+            const coreEventId = safeText(
+                event.coreChat?.coreChatId || event.coreChat?.id,
+                80
+            );
             this.timerMaximums.core = Math.max(
                 Number.EPSILON,
                 finiteNumber(
@@ -1798,9 +2056,11 @@ export class AeroLiveScene extends BaseScene {
                 )
             );
             this.#shortenAmbientTransitionIdle();
+            this.#queueAmbientTransitionChat('core', coreEventId);
             return;
         }
         if (event.type === 'donation-started') {
+            const donationEventId = safeText(event.donation?.id, 80);
             this.timerMaximums.donation = Math.max(
                 Number.EPSILON,
                 finiteNumber(
@@ -1809,9 +2069,12 @@ export class AeroLiveScene extends BaseScene {
                 )
             );
             this.#shortenAmbientTransitionIdle();
+            this.#queueAmbientTransitionChat('donation', donationEventId);
             return;
         }
         if (event.type === 'donation-resolved') {
+            const donationEventId = safeText(event.donation?.id, 80);
+            this.#discardAmbientEventChats(donationEventId);
             this.heroResponseText = safeText(event.heroResponse, 240);
             this.heroResponseSecondsRemaining = 4.5;
             this.heroResponseLabel = '후원 대응';
@@ -1819,17 +2082,31 @@ export class AeroLiveScene extends BaseScene {
                 ? 'embarrassed'
                 : (event.appropriate ? 'happy' : 'sad');
             this.#shortenAmbientTransitionIdle();
+            this.#queueAmbientTransitionChat('heroResponse');
             return;
         }
         if (event.type === 'core-chat-resolved') {
             this.intentContextRevision += 1;
             this.selectedCoreChatId = null;
+            const coreEventId = safeText(
+                event.coreChat?.coreChatId || event.coreChat?.id,
+                80
+            );
+            this.#discardAmbientEventChats(coreEventId);
             this.#shortenAmbientTransitionIdle();
+            this.#queueAmbientTransitionChat('coreResolved');
             return;
         }
         if (event.type === 'core-chat-cancelled') {
             this.intentContextRevision += 1;
             this.selectedCoreChatId = null;
+            this.#discardAmbientEventChats(
+                event.coreChat?.coreChatId || event.coreChat?.id
+            );
+            return;
+        }
+        if (event.type === 'donation-cancelled') {
+            this.#discardAmbientEventChats(event.donation?.id);
             return;
         }
         if (event.type === 'player-message-blocked') {
@@ -1901,19 +2178,14 @@ export class AeroLiveScene extends BaseScene {
     }
 
     /**
-     * 현재 채팅과 폴백 목록에 제품 시청자 풀을 섞어 AI 계약의 허용 ID를 만듭니다.
+     * 실제 방출 순서(최근 행→오프닝→fallback)를 시뮬레이션해 최근 9행에
+     * 재등장하지 않는 현재 주제 모델 슬롯을 순서대로 만듭니다.
      * @param {Array<object>} [fallbackChats=[]] - beat의 폴백 채팅입니다.
+     * @param {Array<object>} [prefixChats=[]] - fallback 앞에 나갈 로컬 채팅입니다.
      * @returns {string[]} 최대 12개의 고유 시청자 ID입니다.
      * @private
      */
-    #getViewerIds(fallbackChats = []) {
-        const contextualIds = [
-            ...(Array.isArray(fallbackChats) ? fallbackChats : []),
-            ...(Array.isArray(this.snapshot?.chats) ? this.snapshot.chats : [])
-        ]
-            .filter((chat) => chat?.source !== 'player' && chat?.masked !== true)
-            .map((chat) => safeText(chat?.viewer_id || chat?.viewerId || chat?.author || chat?.nickname, 24))
-            .filter(Boolean);
+    #getViewerIds(fallbackChats = [], prefixChats = []) {
         const isPrivateIdentity = (viewerId) => {
             const viewerKey = viewerId.toLocaleLowerCase('ko-KR');
             return viewerKey === 'aero_mask'
@@ -1923,25 +2195,73 @@ export class AeroLiveScene extends BaseScene {
                 ).includes(AERO_LIVE_PLAYER_NAME_TOKEN));
         };
         const privateViewerIds = createPrivateViewerIds(this.playerName);
-        const uniqueContextualIds = [...new Set(contextualIds)]
-            .filter((viewerId) => !isPrivateIdentity(viewerId))
-            .slice(-6);
-        const viewerPool = (Array.isArray(AERO_LIVE_VIEWER_IDS) ? AERO_LIVE_VIEWER_IDS : [])
+        const topicViewerIds = getAeroLiveTopicViewerIds(
+            safeText(this.snapshot?.topic?.id || this.ambientChatTopicId, 80)
+        )
             .map((viewerId) => safeText(viewerId, 24))
             .filter((viewerId) => viewerId && !isPrivateIdentity(viewerId));
-        const poolOffset = viewerPool.length > 0
-            ? (Math.max(0, Math.floor(finiteNumber(this.snapshot?.currentBeat?.index, 0))) * 7) % viewerPool.length
+        const fallbackViewerIds = topicViewerIds.length > 0
+            ? topicViewerIds
+            : (Array.isArray(AERO_LIVE_VIEWER_IDS) ? AERO_LIVE_VIEWER_IDS : [])
+                .map((viewerId) => safeText(viewerId, 24))
+                .filter((viewerId) => viewerId && !isPrivateIdentity(viewerId));
+        const bannedAuthors = new Set((Array.isArray(this.snapshot?.bannedAuthors)
+            ? this.snapshot.bannedAuthors
+            : [])
+            .map((author) => safeText(author, 24))
+            .filter(Boolean));
+        const prefixViewerIds = (Array.isArray(prefixChats) ? prefixChats : [])
+            .map((chat) => safeText(chat?.viewer_id || chat?.viewerId || chat?.author, 24))
+            .filter(Boolean);
+        const excludedModelIds = new Set(prefixViewerIds);
+        const beatIndex = Math.max(
+            0,
+            Math.floor(finiteNumber(this.snapshot?.currentBeat?.index, 0))
+        );
+        const topicOffset = fallbackViewerIds.length > 0
+            ? (beatIndex * 3) % fallbackViewerIds.length
             : 0;
-        const rotatedPool = viewerPool.length > 0
-            ? [...viewerPool.slice(poolOffset), ...viewerPool.slice(0, poolOffset)]
+        const rotatedViewerIds = fallbackViewerIds.length > 0
+            ? [
+                ...fallbackViewerIds.slice(topicOffset),
+                ...fallbackViewerIds.slice(0, topicOffset)
+            ]
             : [];
-        const uniqueIds = [...new Set([
-            ...uniqueContextualIds,
-            ...rotatedPool,
-            ...contextualIds.filter((viewerId) => !isPrivateIdentity(viewerId)),
-            ...privateViewerIds
-        ])].slice(0, 12);
-        return uniqueIds.length > 0 ? uniqueIds : privateViewerIds;
+        const candidates = rotatedViewerIds.filter((viewerId) => (
+            !bannedAuthors.has(viewerId) && !excludedModelIds.has(viewerId)
+        ));
+        const recentWindow = (Array.isArray(this.snapshot?.chats) ? this.snapshot.chats : [])
+            .slice(-AMBIENT_RECENT_AUTHOR_WINDOW)
+            .map((chat) => safeText(chat?.viewer_id || chat?.author, 24))
+            .filter(Boolean);
+        for (const chat of [
+            ...(Array.isArray(prefixChats) ? prefixChats : []),
+            ...(Array.isArray(fallbackChats) ? fallbackChats : [])
+        ]) {
+            const viewerId = safeText(chat?.viewer_id || chat?.viewerId || chat?.author, 24);
+            if (!viewerId) continue;
+            recentWindow.push(viewerId);
+            if (recentWindow.length > AMBIENT_RECENT_AUTHOR_WINDOW) {
+                recentWindow.shift();
+            }
+        }
+
+        const scheduledViewerIds = [];
+        while (scheduledViewerIds.length < 12) {
+            const recentAuthors = new Set(recentWindow);
+            const nextViewerId = candidates.find((viewerId) => (
+                !scheduledViewerIds.includes(viewerId) && !recentAuthors.has(viewerId)
+            ));
+            if (!nextViewerId) {
+                break;
+            }
+            scheduledViewerIds.push(nextViewerId);
+            recentWindow.push(nextViewerId);
+            if (recentWindow.length > AMBIENT_RECENT_AUTHOR_WINDOW) {
+                recentWindow.shift();
+            }
+        }
+        return scheduledViewerIds.length > 0 ? scheduledViewerIds : privateViewerIds;
     }
 
     /**
