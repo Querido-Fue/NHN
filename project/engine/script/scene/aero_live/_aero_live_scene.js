@@ -24,6 +24,7 @@ import {
     validateAeroLivePlayerName
 } from './_aero_live_player_identity.mjs';
 import { AeroLiveRenderer } from './_aero_live_renderer.js';
+import { AeroLiveTutorial } from './_aero_live_tutorial.mjs';
 
 const AERO_CONSTANTS = getData('AERO_LIVE_SCENE_CONSTANTS');
 const UI = AERO_CONSTANTS.UI;
@@ -65,6 +66,30 @@ const CORE_ACTIONS = Object.freeze([
 function finiteNumber(value, fallback = 0) {
     const numberValue = Number(value);
     return Number.isFinite(numberValue) ? numberValue : fallback;
+}
+
+/** 헤드리스 의존성 주입 환경에서도 Scene 수명주기를 유지할 최소 튜토리얼입니다. */
+function createTutorialController() {
+    if (typeof AeroLiveTutorial === 'function') {
+        return new AeroLiveTutorial();
+    }
+    return {
+        start() {},
+        isActive: () => false,
+        canAdvance: () => false,
+        advance: () => false,
+        update: () => false,
+        getPresentation: () => null
+    };
+}
+
+function isAeroLiveSmokeRun() {
+    try {
+        return typeof process !== 'undefined'
+            && process?.env?.AERO_LIVE_NW_SMOKE === '1';
+    } catch {
+        return false;
+    }
 }
 
 /**
@@ -182,12 +207,18 @@ function createPrivateViewerIds(playerName, count = 3) {
 export class AeroLiveScene extends BaseScene {
     /**
      * @param {object} sceneSystem - 엔진 씬 시스템입니다.
-     * @param {{runtime?:AeroLiveRuntime,aiService?:AeroLiveAiService,runtimeOptions?:object,topicId?:string,playerName?:string}} [options={}] - 테스트 및 직접 진입 옵션입니다.
+     * @param {{runtime?:AeroLiveRuntime,aiService?:AeroLiveAiService,runtimeOptions?:object,topicId?:string,playerName?:string,tutorial?:boolean}} [options={}] - 테스트 및 직접 진입 옵션입니다.
      */
     constructor(sceneSystem, options = {}) {
         super(sceneSystem);
         this.options = options || {};
         this.isDestroyed = false;
+        this.tutorialEnabled = this.options.tutorial === true
+            || (this.options.tutorial !== false
+                && !this.options.runtime
+                && !this.options.aiService
+                && !this.options.campaign
+                && !isAeroLiveSmokeRun());
         const initialPlayerName = validateAeroLivePlayerName(this.options.playerName);
         this.playerName = initialPlayerName.valid ? initialPlayerName.name : '';
         this.mode = this.playerName ? MODE_TOPIC_SELECT : MODE_NICKNAME;
@@ -218,12 +249,16 @@ export class AeroLiveScene extends BaseScene {
         this.ambientReservedViewerIds = new Set();
         this.ambientPendingModelChats = new Set();
         this.ambientModelRequestPending = false;
+        this.tutorial = createTutorialController();
+        this.tutorialCompleted = false;
+        this.tutorialPendingBroadcastStart = false;
         this.keyLatch = new Map();
         this.buttons = [];
         this.topicButtons = [];
         this.coreButtons = [];
         this.coreRowButtons = [];
         this.donationButtons = [];
+        this.tutorialAdvanceButton = null;
         this.visibleChatRows = [];
         this.coreRowButtonSignature = '';
         this.selectedCoreChatId = null;
@@ -269,6 +304,11 @@ export class AeroLiveScene extends BaseScene {
 
         const deltaSeconds = Math.max(0, finiteNumber(getDelta(), 0));
         this.elapsedVisualSeconds += deltaSeconds;
+        const tutorialWasActive = this.tutorial?.isActive?.() === true;
+        this.tutorial?.update?.(deltaSeconds);
+        if (tutorialWasActive && this.tutorial?.isActive?.() !== true) {
+            this.#finishTutorial();
+        }
         this.toastSecondsRemaining = Math.max(0, this.toastSecondsRemaining - deltaSeconds);
         if (this.toastSecondsRemaining <= 0) {
             this.toastText = '';
@@ -296,7 +336,10 @@ export class AeroLiveScene extends BaseScene {
      * @override
      */
     fixedUpdate() {
-        if (this.isDestroyed || this.mode !== MODE_LIVE || this.snapshot?.status !== 'live') {
+        if (this.isDestroyed
+            || this.mode !== MODE_LIVE
+            || this.snapshot?.status !== 'live'
+            || this.tutorial?.isActive?.() === true) {
             return;
         }
 
@@ -374,6 +417,7 @@ export class AeroLiveScene extends BaseScene {
         this.composer = null;
         this.nicknameComposer = null;
         this.renderer = null;
+        this.tutorial = null;
         this.snapshot = null;
     }
 
@@ -417,7 +461,8 @@ export class AeroLiveScene extends BaseScene {
             heroResponseExpression: this.heroResponseExpression,
             echoMemories: this.echoMemories.map((memory) => ({ ...memory })),
             aiStatus: this.aiService?.getStatus?.() || 'AI 준비',
-            campaign: this.campaign?.getSnapshot?.() || null
+            campaign: this.campaign?.getSnapshot?.() || null,
+            tutorial: this.tutorial?.getPresentation?.(this.layout) || null
         };
     }
 
@@ -625,6 +670,12 @@ export class AeroLiveScene extends BaseScene {
             h: coreActionH
         }));
         const chatHeaderH = Math.max(vy(4.5), px(28));
+        this.layout.freeChatCount = {
+            x: rightInnerX + rightInnerW * .54,
+            y: chatContent.y + Math.max(px(2), panelPad * .18),
+            w: rightInnerW * .46,
+            h: Math.max(chatHeaderH, panelPad * .92)
+        };
         this.layout.chatArea = {
             x: rightInnerX,
             y: chatContent.y + chatPad + chatHeaderH,
@@ -762,6 +813,8 @@ export class AeroLiveScene extends BaseScene {
         this.resultRestartButton.aeroRole = MODE_RESULTS;
         this.resultTopicsButton = this.#createHitButton(this.layout.resultTopics, () => this.#returnToTopicSelect());
         this.resultTopicsButton.aeroRole = MODE_RESULTS;
+        this.tutorialAdvanceButton = this.#createHitButton(this.layout.backdrop, () => this.#advanceTutorial());
+        this.tutorialAdvanceButton.aeroRole = 'tutorial-advance';
         this.#syncCoreRowButtons(true);
     }
 
@@ -867,7 +920,8 @@ export class AeroLiveScene extends BaseScene {
         this.#syncCoreSelection();
         this.#syncCoreRowButtons();
         const live = this.mode === MODE_LIVE && this.snapshot?.status === 'live';
-        const interactionLocked = this.earlyEndModalOpen || this.inputClassificationPending;
+        const tutorialActive = this.tutorial?.isActive?.() === true;
+        const interactionLocked = this.earlyEndModalOpen || this.inputClassificationPending || tutorialActive;
         const activeCoreChatId = this.#getActiveCoreChatId();
         const coreSelected = live
             && !!activeCoreChatId
@@ -899,6 +953,7 @@ export class AeroLiveScene extends BaseScene {
         this.#setButtonState(this.modalConfirmButton, this.earlyEndModalOpen, false);
         this.#setButtonState(this.resultRestartButton, this.mode === MODE_RESULTS, false);
         this.#setButtonState(this.resultTopicsButton, this.mode === MODE_RESULTS, false);
+        this.#setButtonState(this.tutorialAdvanceButton, tutorialActive && this.tutorial?.canAdvance?.() === true, false);
     }
 
     /**
@@ -937,6 +992,7 @@ export class AeroLiveScene extends BaseScene {
         this.modalConfirmButton = null;
         this.resultRestartButton = null;
         this.resultTopicsButton = null;
+        this.tutorialAdvanceButton = null;
     }
 
     /**
@@ -947,7 +1003,8 @@ export class AeroLiveScene extends BaseScene {
         if (this.composer && this.layout?.composer) {
             const visible = this.mode === MODE_LIVE
                 && this.snapshot?.status === 'live'
-                && !this.earlyEndModalOpen;
+                && !this.earlyEndModalOpen
+                && this.tutorial?.isActive?.() !== true;
             const messagesRemaining = finiteNumber(this.snapshot?.resources?.playerMessagesRemaining, 0);
             this.composer.sync({
                 rect: this.layout.composer,
@@ -1008,6 +1065,13 @@ export class AeroLiveScene extends BaseScene {
      * @private
      */
     #handleKeyboardInput() {
+        if (this.tutorial?.isActive?.() === true) {
+            const advanceRequested = this.#consumeKeyPress('Space');
+            if (advanceRequested) {
+                this.#advanceTutorial();
+            }
+            return;
+        }
         for (let index = 0; index < 5; index += 1) {
             if (!this.#consumeKeyPress(`Digit${index + 1}`)) {
                 continue;
@@ -1079,8 +1143,15 @@ export class AeroLiveScene extends BaseScene {
             this.echoMemories = [];
             this.pendingEchoCallback = null;
             this.#clearAmbientChatQueue();
-            this.#consumeRuntimeEvents();
+            this.tutorialPendingBroadcastStart = this.tutorialEnabled && !this.tutorialCompleted;
+            if (this.tutorialPendingBroadcastStart) {
+                this.tutorial?.start?.();
+            } else {
+                this.#consumeRuntimeEvents();
+            }
             this.#syncSnapshotState();
+            this.#syncButtonStates();
+            this.#syncComposerDom();
         } catch (error) {
             if (campaignPrepared) {
                 this.campaign.cancelPreparedBroadcast();
@@ -1088,6 +1159,30 @@ export class AeroLiveScene extends BaseScene {
             console.warn('[AeroLiveScene] 방송 시작 실패', error);
             this.#showToast('방송을 시작하지 못했습니다. 다른 주제를 선택해 주세요.');
         }
+    }
+
+    /** 사용자의 클릭·Space 입력으로 다음 튜토리얼 단계 전환을 시작합니다. @private */
+    #advanceTutorial() {
+        if (this.tutorial?.advance?.() !== true) {
+            return;
+        }
+        this.#syncButtonStates();
+        this.#syncComposerDom();
+    }
+
+    /** 마지막 안내가 사라진 뒤 보류해 둔 첫 비트의 런타임 이벤트를 시작합니다. @private */
+    #finishTutorial() {
+        if (!this.tutorialPendingBroadcastStart) {
+            return;
+        }
+        this.tutorialPendingBroadcastStart = false;
+        this.tutorialCompleted = true;
+        if (this.mode === MODE_LIVE && this.snapshot?.status === 'live') {
+            this.#consumeRuntimeEvents();
+            this.#syncSnapshotState();
+        }
+        this.#syncButtonStates();
+        this.#syncComposerDom();
     }
 
     /**

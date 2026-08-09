@@ -1,5 +1,11 @@
 import { getData } from 'data/data_handler.js';
-import { getDisplaySystem, measureText, render } from 'display/display_system.js';
+import {
+    getCanvasOffset,
+    getDisplaySystem,
+    getScaleRatio,
+    measureText,
+    render
+} from 'display/display_system.js';
 import { OverlaySession } from 'overlay/_overlay_session.js';
 import { getSetting } from 'save/save_system.js';
 import { createFontString, truncateTextToWidth, wrapTextByCharacters } from 'util/font_util.js';
@@ -50,6 +56,8 @@ const DONATION_ALERT_SECONDS = Math.max(
     Number(AERO_CONSTANTS.UI?.DONATION_ALERT_SECONDS) || 5.5
 );
 const TOP_BAR_TIMER_COLOR = '#28566E';
+const TOP_BAR_STAT_LABEL_COLOR = 'rgba(245,254,255,0.86)';
+const DISPLAY_VIEWER_MULTIPLIER = 3;
 /**
  * 숫자를 지정한 범위로 제한합니다.
  * @param {*} value - 원본 값입니다.
@@ -100,6 +108,16 @@ function integer(value) {
 }
 
 /**
+ * 시청자 수는 연출용으로만 세 배 확대해 표기합니다.
+ * 런타임 지표와 판정에는 원본 값을 계속 사용합니다.
+ * @param {*} value - 원본 시청자 수입니다.
+ * @returns {string} 확대된 시청자 수 문자열입니다.
+ */
+function displayedViewerCount(value) {
+    return integer(number(value) * DISPLAY_VIEWER_MULTIPLIER);
+}
+
+/**
  * 초를 분:초 문자열로 표시합니다.
  * @param {*} seconds - 초 단위 값입니다.
  * @returns {string} 분:초 문자열입니다.
@@ -130,6 +148,8 @@ export class AeroLiveRenderer {
         this.destroyed = false;
         this.glassSession = null;
         this.glassSessionInitialized = false;
+        this.tutorialGlassSession = null;
+        this.tutorialGlassSessionInitialized = false;
         this.lastBackdropRevision = '';
         this.contentLayer = 'ui';
         this.wallpaperEffectPass = null;
@@ -151,6 +171,12 @@ export class AeroLiveRenderer {
         };
         this.donationAlertEventKey = '';
         this.donationAlertStartedAt = 0;
+        this.donationAlertDomGif = null;
+        this.donationAlertDomGifEventKey = '';
+        this.donationAlertDomGifFailed = false;
+        this.tutorialVignetteCanvas = null;
+        this.tutorialVignetteContext = null;
+        this.tutorialVignetteSignature = '';
         this.disableTransparency = typeof getSetting === 'function'
             && getSetting('disableTransparency') === true;
         this.heroReady = false;
@@ -402,6 +428,8 @@ export class AeroLiveRenderer {
         if (context.mode === 'live' && previousMode !== 'live') {
             this.#resetHeroMotionTimeline(context.elapsedVisualSeconds);
             this.#resetDonationAlertTimeline(context.elapsedVisualSeconds);
+        } else if (context.mode !== 'live') {
+            this.#hideDonationAlertDomGif();
         }
         this.liveStageBackgroundRenderedThisFrame = false;
         this.#ensureGlassSession();
@@ -413,6 +441,8 @@ export class AeroLiveRenderer {
         else this.#live();
         this.#toast();
         if (context.earlyEndModalOpen) this.#modal();
+        if (context.tutorial?.active) this.#tutorial();
+        else this.#releaseTutorialGlassSession();
     }
 
     /**
@@ -464,6 +494,10 @@ export class AeroLiveRenderer {
             failed: true
         };
         this.liveStageBackgroundRenderedThisFrame = false;
+        this.#disposeDonationAlertDomGif();
+        this.tutorialVignetteCanvas = null;
+        this.tutorialVignetteContext = null;
+        this.tutorialVignetteSignature = '';
         if (this.donationAlertAsset?.image) {
             this.donationAlertAsset.image.onload = null;
             this.donationAlertAsset.image.onerror = null;
@@ -479,6 +513,7 @@ export class AeroLiveRenderer {
         this.glassSession?.release?.();
         this.glassSession = null;
         this.glassSessionInitialized = true;
+        this.#releaseTutorialGlassSession();
         this.lastBackdropRevision = '';
         this.contentLayer = 'ui';
         this.context = null;
@@ -492,6 +527,27 @@ export class AeroLiveRenderer {
         this.glassSessionInitialized = true;
         this.glassSession = this.#createGlassSession();
         this.contentLayer = this.glassSession?.uiLayerId || 'ui';
+    }
+
+    /** 튜토리얼 카드가 이미 그려진 방송 UI 전체를 안전하게 블러할 상위 glass surface를 만듭니다. @private */
+    #ensureTutorialGlassSession() {
+        if (this.tutorialGlassSessionInitialized || this.destroyed) {
+            return this.tutorialGlassSession;
+        }
+        this.tutorialGlassSessionInitialized = true;
+        this.tutorialGlassSession = this.#createGlassSession({
+            layer: 1,
+            orderSequence: 0,
+            blurUpdateMode: 'always'
+        });
+        return this.tutorialGlassSession;
+    }
+
+    /** 튜토리얼이 끝났을 때 상위 glass surface를 반환합니다. @private */
+    #releaseTutorialGlassSession() {
+        this.tutorialGlassSession?.release?.();
+        this.tutorialGlassSession = null;
+        this.tutorialGlassSessionInitialized = false;
     }
 
     /** wallpaper asset이 settle된 뒤 scene 전용 GPU pass를 한 번만 준비합니다. @private */
@@ -572,7 +628,7 @@ export class AeroLiveRenderer {
     }
 
     /** 실제 backdrop을 샘플링하는 전용 glass/effect 및 선명한 2D content surface를 만듭니다. @private */
-    #createGlassSession() {
+    #createGlassSession({ layer = 0, orderSequence = 0, blurUpdateMode = 'dirty' } = {}) {
         const displaySystem = typeof getDisplaySystem === 'function' ? getDisplaySystem() : null;
         if (!displaySystem || typeof OverlaySession !== 'function') {
             return null;
@@ -580,13 +636,13 @@ export class AeroLiveRenderer {
         try {
             return new OverlaySession({
                 displaySystem,
-                layer: 0,
+                layer,
                 dim: 0,
                 transparent: true,
                 glOverlay: true,
-                blurUpdateMode: 'dirty',
+                blurUpdateMode,
                 effects: {},
-                orderSequence: 0,
+                orderSequence,
                 disableTransparency: this.disableTransparency
             });
         } catch {
@@ -996,9 +1052,12 @@ export class AeroLiveRenderer {
             shadowRadius: 0,
             lineWidth: 1
         });
-        [['시청자', integer(m.viewers), COLORS.DEEP_BLUE], ['참여도', `${Math.round(number(m.engagement))}%`, COLORS.AQUA], ['수익', `${integer(m.revenue)}원`, COLORS.POSITIVE]].forEach((item, i) => {
+        [['시청자', displayedViewerCount(m.viewers), COLORS.DEEP_BLUE], ['참여도', `${Math.round(number(m.engagement))}%`, COLORS.AQUA], ['수익', `${integer(m.revenue)}원`, COLORS.POSITIVE]].forEach((item, i) => {
             const x = statsPanel.x + i * (statW + statGap);
-            this.#label(item[0], x + statW / 2, statsPanel.y + statsPanel.h * .3, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'center', baseline: 'middle', weight: 700, maxWidth: statW * .92 });
+            this.#label(item[0], x + statW / 2, statsPanel.y + statsPanel.h * .3, this.#size(UI.SMALL_FONT_WH), TOP_BAR_STAT_LABEL_COLOR, {
+                align: 'center', baseline: 'middle', weight: 800, maxWidth: statW * .92,
+                shadowBlur: 1.5, shadowColor: 'rgba(7,35,59,0.45)'
+            });
             this.#label(item[1], x + statW / 2, statsPanel.y + statsPanel.h * .68, this.#size(UI.METRIC_FONT_WH), item[2], { align: 'center', baseline: 'middle', weight: 950, maxWidth: statW * .92 });
         });
     }
@@ -1067,6 +1126,7 @@ export class AeroLiveRenderer {
         const dialogue = c.layout.heroDialogue;
         const beat = c.snapshot?.currentBeat || {};
         const activeDonation = c.snapshot?.activeDonation;
+        const coreResponsePending = !!c.snapshot?.activeCoreChat;
         const activeExpression = c.heroResponseText
             ? (c.heroResponseExpression || beat.expression)
             : beat.expression;
@@ -1183,11 +1243,21 @@ export class AeroLiveRenderer {
             shadowRadius: 0,
             lineWidth: 1.2
         });
-        if (c.heroResponseText) {
+        if (c.heroResponseText || coreResponsePending) {
             const responseLabel = c.heroResponseLabel || '실시간 답변';
-            this.#label(responseLabel, dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .22, this.#size(UI.SMALL_FONT_WH), responseLabel === '채팅 답변' ? COLORS.AQUA : COLORS.WARNING, { baseline: 'middle', weight: 900 });
+            this.#label(
+                coreResponsePending ? '핵심 채팅 대응 대기' : responseLabel,
+                dialogue.x + dialogue.w * .055,
+                dialogue.y + dialogue.h * .22,
+                this.#size(UI.SMALL_FONT_WH),
+                responseLabel === '채팅 답변' ? COLORS.AQUA : COLORS.WARNING,
+                { baseline: 'middle', weight: 900 }
+            );
         }
-        this.#wrapped(c.heroResponseText || beat.heroText || '방송 시작을 준비하고 있어요.', dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .4, dialogue.w * .89, this.#size(UI.DIALOGUE_FONT_WH), COLORS.GLASS_WHITE, 3);
+        const dialogueText = coreResponsePending
+            ? '핵심 채팅을 확인한 뒤 강퇴, 삭제 또는 무시 중 대응 방식을 선택해 주세요.'
+            : c.heroResponseText || beat.heroText || '방송 시작을 준비하고 있어요.';
+        this.#wrapped(dialogueText, dialogue.x + dialogue.w * .055, dialogue.y + dialogue.h * .4, dialogue.w * .89, this.#size(UI.DIALOGUE_FONT_WH), COLORS.GLASS_WHITE, 3);
     }
 
     /**
@@ -1211,6 +1281,127 @@ export class AeroLiveRenderer {
     #resetDonationAlertTimeline(elapsedSeconds) {
         this.donationAlertEventKey = '';
         this.donationAlertStartedAt = Math.max(0, number(elapsedSeconds));
+        this.#hideDonationAlertDomGif();
+    }
+
+    /**
+     * Canvas/WebGL 합성 경로 밖에서 GIF의 네이티브 프레임 재생을 유지할 DOM 이미지를 만듭니다.
+     * @returns {HTMLImageElement|null} 재생용 이미지입니다.
+     * @private
+     */
+    #ensureDonationAlertDomGif() {
+        if (this.destroyed || this.donationAlertDomGif) {
+            return this.donationAlertDomGif;
+        }
+        if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+            return null;
+        }
+        const host = document.getElementById?.('overlaylayerhost');
+        if (!host?.appendChild) {
+            return null;
+        }
+        try {
+            const image = document.createElement('img');
+            image.alt = '';
+            image.draggable = false;
+            image.setAttribute?.('aria-hidden', 'true');
+            image.onload = () => {
+                this.donationAlertDomGifFailed = false;
+            };
+            image.onerror = () => {
+                this.donationAlertDomGifFailed = true;
+                if (image.style) {
+                    image.style.display = 'none';
+                    image.style.opacity = '0';
+                }
+            };
+            Object.assign(image.style, {
+                position: 'absolute',
+                display: 'none',
+                pointerEvents: 'none',
+                userSelect: 'none',
+                objectFit: 'contain',
+                zIndex: '2',
+                transform: 'translateZ(0)',
+                willChange: 'transform, opacity'
+            });
+            host.appendChild(image);
+            this.donationAlertDomGif = image;
+            return image;
+        } catch {
+            return null;
+        }
+    }
+
+    /** 후원 GIF DOM 오버레이를 숨깁니다. @private */
+    #hideDonationAlertDomGif() {
+        const image = this.donationAlertDomGif;
+        if (image?.style) {
+            image.style.display = 'none';
+            image.style.opacity = '0';
+        }
+        this.donationAlertDomGifEventKey = '';
+    }
+
+    /** 후원 GIF DOM 오버레이와 리스너를 정리합니다. @private */
+    #disposeDonationAlertDomGif() {
+        const image = this.donationAlertDomGif;
+        if (image) {
+            image.onload = null;
+            image.onerror = null;
+            image.removeAttribute?.('src');
+            if (image.parentNode?.removeChild) {
+                image.parentNode.removeChild(image);
+            }
+        }
+        this.donationAlertDomGif = null;
+        this.donationAlertDomGifEventKey = '';
+        this.donationAlertDomGifFailed = false;
+    }
+
+    /**
+     * GIF를 Canvas 대신 네이티브 이미지 요소에서 재생하도록 현재 카드 위치를 동기화합니다.
+     * @param {{x:number,y:number,w:number,h:number}} graphic - Canvas 좌표계의 GIF 사각형입니다.
+     * @param {number} alpha - 현재 알림 투명도입니다.
+     * @param {string} eventKey - 후원 식별 키입니다.
+     * @returns {boolean} 네이티브 GIF 오버레이 사용 여부입니다.
+     * @private
+     */
+    #syncDonationAlertDomGif(graphic, alpha, eventKey) {
+        const image = this.#ensureDonationAlertDomGif();
+        const path = this.donationAlertAsset?.path;
+        if (!image?.style || !path) {
+            return false;
+        }
+        if (eventKey !== this.donationAlertDomGifEventKey) {
+            this.donationAlertDomGifEventKey = eventKey;
+            this.donationAlertDomGifFailed = false;
+            image.removeAttribute?.('src');
+            image.src = path;
+        }
+        if (this.donationAlertDomGifFailed) {
+            return false;
+        }
+        const scaleRatio = Math.max(.0001, number(
+            typeof getScaleRatio === 'function' ? getScaleRatio() : 1,
+            1
+        ));
+        const canvasOffset = typeof getCanvasOffset === 'function'
+            ? getCanvasOffset()
+            : { x: 0, y: 0 };
+        const host = image.parentNode;
+        const insideOverlayHost = host?.id === 'overlaylayerhost';
+        const offsetX = insideOverlayHost ? 0 : number(canvasOffset?.x);
+        const offsetY = insideOverlayHost ? 0 : number(canvasOffset?.y);
+        Object.assign(image.style, {
+            display: 'block',
+            left: `${offsetX + graphic.x / scaleRatio}px`,
+            top: `${offsetY + graphic.y / scaleRatio}px`,
+            width: `${graphic.w / scaleRatio}px`,
+            height: `${graphic.h / scaleRatio}px`,
+            opacity: `${clamp(alpha, 0, 1)}`
+        });
+        return true;
     }
 
     /** 캐릭터 오른쪽 위에 후원자·금액·메시지와 GIF를 잠시 표시합니다. @private */
@@ -1219,6 +1410,7 @@ export class AeroLiveRenderer {
         const donation = c.snapshot?.activeDonation;
         if (!donation || !stage) {
             this.donationAlertEventKey = '';
+            this.#hideDonationAlertDomGif();
             return;
         }
 
@@ -1237,6 +1429,7 @@ export class AeroLiveRenderer {
 
         const ageSeconds = Math.max(0, visualSeconds - this.donationAlertStartedAt);
         if (ageSeconds >= DONATION_ALERT_SECONDS) {
+            this.#hideDonationAlertDomGif();
             return;
         }
         this.#ensureDonationAlertAsset();
@@ -1253,10 +1446,11 @@ export class AeroLiveRenderer {
         card.w = Math.min(card.w, stage.x + stage.w * .95 - card.x);
         card.h = Math.min(card.h, stage.y + stage.h * .58 - card.y);
         if (card.w <= 0 || card.h <= 0 || alpha <= 0) {
+            this.#hideDonationAlertDomGif();
             return;
         }
 
-        const graphicSize = Math.max(34, Math.min(card.w * .23, card.h * .39));
+        const graphicSize = Math.max(34, Math.min(card.w * .276, card.h * .468));
         const graphic = {
             x: card.x + (card.w - graphicSize) / 2,
             y: card.y + card.h * .08,
@@ -1266,7 +1460,8 @@ export class AeroLiveRenderer {
         const gif = this.donationAlertAsset?.ready
             ? this.donationAlertAsset.image
             : null;
-        if (gif) {
+        const gifPlayingNatively = this.#syncDonationAlertDomGif(graphic, alpha, eventKey);
+        if (!gifPlayingNatively && gif) {
             this.#drawContent({
                 shape: 'image',
                 image: gif,
@@ -1278,7 +1473,7 @@ export class AeroLiveRenderer {
                 smoothing: true,
                 alpha
             });
-        } else {
+        } else if (!gifPlayingNatively) {
             this.#drawContent({
                 shape: 'circle',
                 x: graphic.x + graphic.w / 2,
@@ -1479,9 +1674,75 @@ export class AeroLiveRenderer {
             const label = id === 'kick' ? `강퇴 ${integer(resources.kicksRemaining)}` : button.aeroData?.label;
             this.#button(button, label || '처리', COLORS.DARK_GLASS, CORE_COLORS[id] || COLORS.AQUA, COLORS.GLASS_WHITE, button.aeroDisabled);
         });
+        if (c.tutorial?.active) {
+            this.#tutorialChatPreview(c.tutorial.target);
+        }
         if (c.inputClassificationPending) {
             const composer = c.layout.composer;
             this.#label('AI 판정 중 · 활성 이벤트 타이머 일시정지', composer.x, composer.y - c.layout.gap * .42, this.#size(UI.SMALL_FONT_WH), COLORS.NEGATIVE, { baseline: 'bottom', weight: 800, maxWidth: composer.w });
+        }
+    }
+
+    /** 실제 방송 시작 전에도 안내 대상의 위치를 알 수 있도록 비상호작용 미리보기를 그립니다. @private */
+    #tutorialChatPreview(target) {
+        const c = this.context;
+        const scale = Math.max(1, number(c.layout?.pixelScale, 1));
+        if (target === 'composer') {
+            const rect = c.layout.composer;
+            const nicknameW = Math.max(64 * scale, rect.w * .2);
+            const sendW = Math.max(58 * scale, rect.w * .16);
+            this.#drawContent({
+                shape: 'roundRect', ...rect, radius: Math.min(this.#radius() * .62, rect.h * .34),
+                fill: 'rgba(7,35,59,0.86)', stroke: 'rgba(245,254,255,0.38)', lineWidth: 1
+            });
+            this.#drawContent({
+                shape: 'roundRect', x: rect.x, y: rect.y, w: nicknameW, h: rect.h, radius: Math.min(this.#radius() * .62, rect.h * .34),
+                fill: 'rgba(66,224,208,0.22)'
+            });
+            this.#drawContent({
+                shape: 'roundRect', x: rect.x + rect.w - sendW, y: rect.y, w: sendW, h: rect.h, radius: Math.min(this.#radius() * .62, rect.h * .34),
+                fill: 'rgba(66,224,208,0.82)'
+            });
+            this.#label(c.playerName || '플레이어', rect.x + nicknameW * .5, rect.y + rect.h * .5, this.#size(UI.SMALL_FONT_WH), COLORS.AQUA, { align: 'center', baseline: 'middle', weight: 900, maxWidth: nicknameW * .82 });
+            this.#label('방송에 남길 채팅을 입력하세요', rect.x + nicknameW + rect.w * .035, rect.y + rect.h * .5, this.#size(UI.SMALL_FONT_WH), 'rgba(245,254,255,0.64)', { baseline: 'middle', weight: 700, maxWidth: rect.w - nicknameW - sendW - rect.w * .08 });
+            this.#label('전송', rect.x + rect.w - sendW * .5, rect.y + rect.h * .5, this.#size(UI.SMALL_FONT_WH), COLORS.INK, { align: 'center', baseline: 'middle', weight: 950, maxWidth: sendW * .8 });
+            return;
+        }
+
+        const chatArea = c.layout.chatArea;
+        if (target === 'chat') {
+            const row = {
+                x: chatArea.x + chatArea.w * .045,
+                y: chatArea.y + chatArea.h * .46,
+                w: chatArea.w * .91,
+                h: Math.max(34 * scale, chatArea.h * .11)
+            };
+            this.#drawContent({
+                shape: 'roundRect', ...row, radius: Math.max(5, row.h * .2),
+                fill: 'rgba(20,102,151,0.82)',
+                stroke: 'rgba(143,241,255,0.58)',
+                lineWidth: 1
+            });
+            this.#drawContent({ shape: 'roundRect', x: row.x + 5, y: row.y + row.h * .25, w: 5, h: row.h * .5, radius: 999, fill: COLORS.AQUA });
+            this.#label(c.playerName || '플레이어', row.x + row.w * .08, row.y + row.h * .5, this.#size(UI.SMALL_FONT_WH), COLORS.GLASS_WHITE, { baseline: 'middle', weight: 900, maxWidth: row.w * .28 });
+            this.#label('내가 전송한 채팅은 이곳에 표시됩니다.', row.x + row.w * .38, row.y + row.h * .5, this.#size(UI.SMALL_FONT_WH), COLORS.GLASS_WHITE, { baseline: 'middle', weight: 850, maxWidth: row.w * .55 });
+            return;
+        }
+
+        if (target === 'core') {
+            const row = {
+                x: chatArea.x + chatArea.w * .045,
+                y: chatArea.y + chatArea.h * .4,
+                w: chatArea.w * .91,
+                h: Math.max(34 * scale, chatArea.h * .11)
+            };
+            this.#drawContent({ shape: 'roundRect', ...row, radius: Math.max(5, row.h * .2), fill: 'rgba(196,141,20,0.82)', stroke: 'rgba(255,225,128,0.88)', lineWidth: 1.2 });
+            this.#label('CORE · 관리할 채팅', row.x + row.w * .055, row.y + row.h * .5, this.#size(UI.SMALL_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950, maxWidth: row.w * .86 });
+            c.layout.coreActionRects.forEach((rect, index) => {
+                const labels = ['강퇴', '삭제', '무시'];
+                this.#drawContent({ shape: 'roundRect', ...rect, radius: Math.max(5, rect.h * .22), fill: 'rgba(7,35,59,0.88)', stroke: 'rgba(245,254,255,0.26)', lineWidth: 1 });
+                this.#label(labels[index] || '관리', rect.x + rect.w * .5, rect.y + rect.h * .5, this.#size(UI.SMALL_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 900, maxWidth: rect.w * .85 });
+            });
         }
     }
 
@@ -1501,7 +1762,6 @@ export class AeroLiveRenderer {
             });
         this.#drawContent({ shape: 'roundRect', ...rect, radius: this.#radius() * .7, fill: 'rgba(245,254,255,0.27)', stroke: COLORS.GLASS_BORDER, lineWidth: 1 });
         if (!rows.length) {
-            this.#label('시청자 채팅을 기다리는 중입니다.', rect.x + rect.w / 2, rect.y + rect.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'center', baseline: 'middle', weight: 700 });
             return;
         }
         rows.forEach(({ chat = {}, rect: row }) => {
@@ -1615,9 +1875,9 @@ export class AeroLiveRenderer {
         const viewerCardY = left.y + left.h * .12;
         const viewerCardH = left.h * .125;
         [
-            ['시작', integer(start.viewers), COLORS.INK],
-            ['종료', integer(m.viewers), COLORS.AQUA],
-            ['최고 동시', integer(result.peakViewers ?? m.peakViewers ?? m.viewers), COLORS.DEEP_BLUE]
+            ['시작', displayedViewerCount(start.viewers), COLORS.INK],
+            ['종료', displayedViewerCount(m.viewers), COLORS.AQUA],
+            ['최고 동시', displayedViewerCount(result.peakViewers ?? m.peakViewers ?? m.viewers), COLORS.DEEP_BLUE]
         ].forEach((item, index) => this.#resultStat(item[0], item[1], {
             x: leftX + index * (viewerCardW + viewerGap), y: viewerCardY, w: viewerCardW, h: viewerCardH
         }, item[2], true));
@@ -1625,8 +1885,8 @@ export class AeroLiveRenderer {
         const positiveRatio = clamp(result.positiveViewerRatio ?? (number(m.viewers) > 0 ? number(m.positiveViewers) / number(m.viewers) * 100 : 0), 0, 100);
         const negativeRatio = clamp(100 - positiveRatio, 0, 100);
         const splitY = left.y + left.h * .265;
-        this.#resultStat('긍정 시청자', `${integer(m.positiveViewers)}명 · ${positiveRatio.toFixed(1)}%`, { x: leftX, y: splitY, w: leftW, h: left.h * .072 }, COLORS.POSITIVE);
-        this.#resultStat('부정 시청자', `${integer(m.negativeViewers)}명 · ${negativeRatio.toFixed(1)}%`, { x: leftX, y: splitY + left.h * .079, w: leftW, h: left.h * .072 }, COLORS.NEGATIVE);
+        this.#resultStat('긍정 시청자', `${displayedViewerCount(m.positiveViewers)}명 · ${positiveRatio.toFixed(1)}%`, { x: leftX, y: splitY, w: leftW, h: left.h * .072 }, COLORS.POSITIVE);
+        this.#resultStat('부정 시청자', `${displayedViewerCount(m.negativeViewers)}명 · ${negativeRatio.toFixed(1)}%`, { x: leftX, y: splitY + left.h * .079, w: leftW, h: left.h * .072 }, COLORS.NEGATIVE);
 
         const meters = [
             [`스트레스 Δ${delta(metricDelta.stress)}`, m.stress, COLORS.NEGATIVE, false],
@@ -1737,7 +1997,7 @@ export class AeroLiveRenderer {
         }
         const heroRect = { x: rightX, y: right.y + right.h * .785, w: rightW, h: right.h * .15 };
         this.#drawContent({ shape: 'roundRect', ...heroRect, radius: this.#radius() * .55, fill: COLORS.DARK_GLASS });
-        this.#label('히로인의 한마디', heroRect.x + heroRect.w * .035, heroRect.y + heroRect.h * .25, this.#size(UI.SMALL_FONT_WH), COLORS.AQUA, { baseline: 'middle', weight: 900 });
+        this.#label('아쿠아의 한마디', heroRect.x + heroRect.w * .035, heroRect.y + heroRect.h * .25, this.#size(UI.SMALL_FONT_WH), COLORS.AQUA, { baseline: 'middle', weight: 900 });
         this.#wrapped(result.heroComment || '다음 방송에서도 함께해 줘.', heroRect.x + heroRect.w * .035, heroRect.y + heroRect.h * .47, heroRect.w * .93, this.#size(UI.BODY_FONT_WH), COLORS.GLASS_WHITE, 2);
         this.#button(c.resultRestartButton, '같은 주제 재방송', COLORS.DEEP_BLUE, COLORS.GLASS_BORDER, COLORS.GLASS_WHITE);
         this.#button(c.resultTopicsButton, '다른 주제 선택', COLORS.GLASS_FILL_STRONG, COLORS.DEEP_BLUE, COLORS.DEEP_BLUE);
@@ -1753,6 +2013,221 @@ export class AeroLiveRenderer {
         }
         this.#label(label, rect.x + rect.w * .04, rect.y + rect.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { baseline: 'middle', weight: 800, maxWidth: rect.w * .58 });
         this.#label(value, rect.x + rect.w * .96, rect.y + rect.h / 2, this.#size(UI.METRIC_FONT_WH), color, { align: 'right', baseline: 'middle', weight: 950, maxWidth: rect.w * .4 });
+    }
+
+    /** 첫 방송 전에 표시하는 포커스 비네팅과 안내 카드를 그립니다. @private */
+    #tutorial() {
+        const tutorial = this.context?.tutorial;
+        if (!tutorial?.active || !tutorial.vignette) {
+            return;
+        }
+        this.#drawTutorialVignette(tutorial.vignette);
+        if (tutorial.text?.opacity > .001) {
+            this.#drawTutorialText(tutorial.text, tutorial.canAdvance === true);
+        }
+    }
+
+    /** 포커스 중심만 투명하게 남기는 재사용 가능한 비네팅 캔버스를 준비합니다. @private */
+    #ensureTutorialVignetteCanvas() {
+        const c = this.context;
+        const width = Math.max(1, Math.round(number(c?.WW, 1)));
+        const height = Math.max(1, Math.round(number(c?.WH, 1)));
+        if (this.tutorialVignetteCanvas
+            && this.tutorialVignetteContext
+            && this.tutorialVignetteCanvas.width === width
+            && this.tutorialVignetteCanvas.height === height) {
+            return this.tutorialVignetteCanvas;
+        }
+        if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+            return null;
+        }
+        try {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext?.('2d');
+            if (!context) {
+                return null;
+            }
+            canvas.width = width;
+            canvas.height = height;
+            this.tutorialVignetteCanvas = canvas;
+            this.tutorialVignetteContext = context;
+            this.tutorialVignetteSignature = '';
+            return canvas;
+        } catch {
+            return null;
+        }
+    }
+
+    /** 포커스 반경 바깥을 부드럽게 어둡게 하는 마스크를 그립니다. @private */
+    #drawTutorialVignette(vignette) {
+        const c = this.context;
+        const alpha = clamp(number(vignette.alpha), 0, .92);
+        if (alpha <= .001) {
+            return;
+        }
+        const canvas = this.#ensureTutorialVignetteCanvas();
+        const context = this.tutorialVignetteContext;
+        if (!canvas || !context || typeof context.beginPath !== 'function') {
+            this.#drawContent({
+                shape: 'rect', x: 0, y: 0, w: c.WW, h: c.WH,
+                fill: 'rgba(2,7,15,0.8)', alpha
+            });
+            return;
+        }
+        const centerX = clamp(number(vignette.x), 0, c.WW);
+        const centerY = clamp(number(vignette.y), 0, c.WH);
+        const radius = Math.max(1, number(vignette.radius, 1));
+        const pixelScale = Math.max(1, number(c.layout?.pixelScale, 1));
+        const sourceRect = vignette.rect || {
+            x: centerX - radius * .74,
+            y: centerY - radius * .52,
+            w: radius * 1.48,
+            h: radius * 1.04
+        };
+        const focusPadding = clamp(radius * .16, 14 * pixelScale, 56 * pixelScale);
+        const focusRect = {
+            x: number(sourceRect.x) - focusPadding,
+            y: number(sourceRect.y) - focusPadding,
+            w: Math.max(1, number(sourceRect.w, 1) + focusPadding * 2),
+            h: Math.max(1, number(sourceRect.h, 1) + focusPadding * 2)
+        };
+        const cornerRadius = Math.min(
+            Math.max(8 * pixelScale, Math.min(focusRect.w, focusRect.h) * .14),
+            Math.min(focusRect.w, focusRect.h) * .5
+        );
+        const feather = clamp(
+            Math.min(focusRect.w, focusRect.h) * .16,
+            10 * pixelScale,
+            34 * pixelScale
+        );
+        const signature = [
+            Math.round(focusRect.x * 4),
+            Math.round(focusRect.y * 4),
+            Math.round(focusRect.w * 4),
+            Math.round(focusRect.h * 4),
+            Math.round(alpha * 1000)
+        ].join(':');
+        if (signature !== this.tutorialVignetteSignature) {
+            this.tutorialVignetteSignature = signature;
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            context.fillStyle = `rgba(2,7,15,${alpha})`;
+            context.fillRect(0, 0, canvas.width, canvas.height);
+            context.save();
+            context.globalCompositeOperation = 'destination-out';
+            context.filter = `blur(${feather}px)`;
+            context.fillStyle = 'rgba(0,0,0,1)';
+            context.beginPath();
+            context.moveTo(focusRect.x + cornerRadius, focusRect.y);
+            context.lineTo(focusRect.x + focusRect.w - cornerRadius, focusRect.y);
+            context.quadraticCurveTo(
+                focusRect.x + focusRect.w,
+                focusRect.y,
+                focusRect.x + focusRect.w,
+                focusRect.y + cornerRadius
+            );
+            context.lineTo(focusRect.x + focusRect.w, focusRect.y + focusRect.h - cornerRadius);
+            context.quadraticCurveTo(
+                focusRect.x + focusRect.w,
+                focusRect.y + focusRect.h,
+                focusRect.x + focusRect.w - cornerRadius,
+                focusRect.y + focusRect.h
+            );
+            context.lineTo(focusRect.x + cornerRadius, focusRect.y + focusRect.h);
+            context.quadraticCurveTo(
+                focusRect.x,
+                focusRect.y + focusRect.h,
+                focusRect.x,
+                focusRect.y + focusRect.h - cornerRadius
+            );
+            context.lineTo(focusRect.x, focusRect.y + cornerRadius);
+            context.quadraticCurveTo(
+                focusRect.x,
+                focusRect.y,
+                focusRect.x + cornerRadius,
+                focusRect.y
+            );
+            context.closePath();
+            context.fill();
+            context.restore();
+        }
+        this.#drawContent({
+            shape: 'image', image: canvas,
+            x: 0, y: 0, w: c.WW, h: c.WH,
+            smoothing: true
+        });
+    }
+
+    /** 포커스 대상 가까이에 두꺼운 검정 유리 설명창을 배치합니다. @private */
+    #drawTutorialText(tutorialText, canAdvance) {
+        const c = this.context;
+        const target = tutorialText.targetRect || c.layout.right;
+        const pixelScale = Math.max(1, number(c.layout?.pixelScale, 1));
+        const cardW = clamp(c.UIWW * .275, 320 * pixelScale, 560 * pixelScale);
+        const cardH = clamp(c.WH * .175, 132 * pixelScale, 214 * pixelScale);
+        const gap = Math.max(12 * pixelScale, c.layout.panelPad * .8);
+        const minimumX = c.UIOffsetX + gap;
+        const maximumX = c.UIOffsetX + c.UIWW - cardW - gap;
+        const preferredX = number(target.x) + number(target.w) * .5 - cardW * .5;
+        const x = clamp(preferredX, minimumX, Math.max(minimumX, maximumX));
+        const aboveY = number(target.y) - cardH - gap;
+        const belowY = number(target.y) + number(target.h) + gap;
+        const y = aboveY >= gap
+            ? aboveY
+            : belowY + cardH <= c.WH - gap
+                ? belowY
+                : clamp(number(target.y) + number(target.h) * .1, gap, c.WH - cardH - gap);
+        const scale = clamp(number(tutorialText.scale, 1), .9, 1);
+        const opacity = clamp(number(tutorialText.opacity), 0, 1);
+        const rect = {
+            x: x + cardW * (1 - scale) * .5,
+            y: y + cardH * (1 - scale) * .5,
+            w: cardW * scale,
+            h: cardH * scale
+        };
+        const tutorialSession = this.#ensureTutorialGlassSession();
+        const previousContentLayer = this.contentLayer;
+        if (tutorialSession?.uiLayerId) {
+            this.contentLayer = tutorialSession.uiLayerId;
+        }
+        try {
+            this.#panel(rect, {
+                role: 'tutorial-text',
+                session: tutorialSession,
+                forceGlass: tutorialSession?.isGlassEnabled?.() === true,
+                fill: 'rgba(3,9,18,0.64)',
+                flatFill: 'rgba(3,9,18,0.88)',
+                contentTint: 'rgba(0,0,0,0.18)',
+                stroke: 'rgba(245,254,255,0.34)',
+                edgeColor: 'rgba(245,254,255,0.38)',
+                tintColor: 'rgba(0,0,0,1)',
+                tintStrength: .08,
+                edgeStrength: .18,
+                blur: GLASS_STYLE.BLUR * 1.8,
+                forceBlurRefresh: true,
+                shadowColor: 'rgba(0,0,0,0.62)',
+                shadowRadius: 14 * pixelScale,
+                lineWidth: Math.max(1.5, 1.5 * pixelScale),
+                alpha: opacity
+            });
+            const contentX = rect.x + rect.w * .075;
+            const contentW = rect.w * .85;
+            this.#label(tutorialText.title, contentX, rect.y + rect.h * .18, this.#size(UI.SUBTITLE_FONT_WH) * scale, COLORS.GLASS_WHITE, {
+                baseline: 'middle', weight: 950, maxWidth: contentW, alpha: opacity
+            });
+            this.#wrapped(tutorialText.text, contentX, rect.y + rect.h * .36, contentW, this.#size(UI.BODY_FONT_WH) * scale, COLORS.GLASS_WHITE, 4, 'left', {
+                weight: 800,
+                alpha: opacity,
+                shadowBlur: 2,
+                shadowColor: 'rgba(0,0,0,0.7)'
+            });
+            if (canAdvance) {
+                this.#label('클릭 · Space >>', rect.x + rect.w * .925, rect.y + rect.h * .87, this.#size(UI.SMALL_FONT_WH) * scale, 'rgba(245,254,255,0.72)', {
+                    align: 'right', baseline: 'middle', weight: 800, maxWidth: contentW, alpha: opacity
+                });
+            }
+        } finally {
+            this.contentLayer = previousContentLayer;
+        }
     }
 
     /** 조기 종료 확인 모달을 그립니다. @private */
@@ -1954,17 +2429,18 @@ export class AeroLiveRenderer {
         const flatFill = style.flatFill || fill;
         const stroke = style.stroke || COLORS.GLASS_BORDER;
         const lineWidth = style.lineWidth || 1;
+        const session = style.session || this.glassSession;
         if (!style.contentOnly
-            && this.wallpaperRenderedThisFrame
-            && this.glassSession?.isGlassEnabled?.()) {
-            this.glassSession.renderGlassPanel({
+            && (this.wallpaperRenderedThisFrame || style.forceGlass === true)
+            && session?.isGlassEnabled?.()) {
+            session.renderGlassPanel({
                 debugRole: style.role || '',
                 x: rect.x,
                 y: rect.y,
                 w: rect.w,
                 h: rect.h,
                 radius,
-                blur: GLASS_STYLE.BLUR,
+                blur: style.blur ?? GLASS_STYLE.BLUR,
                 fill,
                 stroke,
                 lineWidth,
@@ -1976,6 +2452,7 @@ export class AeroLiveRenderer {
                 shadowRadius: style.shadowRadius ?? GLASS_STYLE.SHADOW_RADIUS,
                 shadowColor: style.shadowColor || COLORS.GLASS_SHADOW,
                 shadowOffsetY: style.shadowOffsetY ?? GLASS_STYLE.SHADOW_OFFSET_Y,
+                forceBlurRefresh: style.forceBlurRefresh === true,
                 alpha
             });
         } else {

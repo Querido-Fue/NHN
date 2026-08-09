@@ -1584,7 +1584,7 @@ export class AeroLiveRuntime {
         if (action === 'delete') return `${chat.author}의 핵심 채팅 메시지만 삭제했습니다.`;
         if (outcome === 'negative-rebutted') return '부정적 핵심 채팅을 차분하게 반박해 여론을 회복했습니다.';
         if (outcome === 'negative-escalated') return '부정적 채팅을 자극해 논쟁과 스트레스가 커졌습니다.';
-        if (outcome === 'positive-recognized' || outcome === 'positive-amplified') return '따뜻한 응원 채팅이 히로인의 긴장을 풀어주었습니다.';
+        if (outcome === 'positive-recognized' || outcome === 'positive-amplified') return '따뜻한 응원 채팅이 아쿠아의 긴장을 풀어주었습니다.';
         if (outcome === 'neutral-recognized') return '다른 의견을 강퇴하지 않고 방송의 대화로 받아들였습니다.';
         return `${chat.author}의 핵심 채팅을 ${action} 방식으로 처리했습니다.`;
     }
