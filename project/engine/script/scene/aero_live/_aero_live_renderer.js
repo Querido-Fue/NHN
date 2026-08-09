@@ -988,8 +988,16 @@ export class AeroLiveRenderer {
                 fill: 'rgba(235,251,255,0.18)',
                 flatFill: 'rgba(235,251,255,0.34)',
                 contentTint: 'rgba(245,254,255,0.025)',
+                stroke: 'rgba(255,255,255,0.24)',
+                innerStroke: 'rgba(255,255,255,0.1)',
                 tintColor,
                 tintStrength,
+                edgeStrength: .14,
+                topSheenHeight: Math.max(
+                    8 * this.#uiScale(),
+                    Math.min(rect.h * .13, 34 * this.#uiScale())
+                ),
+                topSheenAlpha: .72,
                 alpha: .92,
                 shadowRadius: 9
             });
@@ -1075,7 +1083,7 @@ export class AeroLiveRenderer {
             this.#panel(rect, { fill: COLORS.GLASS_FILL, alpha: .92, tintStrength: .16 });
         }
         const producerTitleY = liveWindowLayout
-            ? titleRect.y + titleRect.h * .5
+            ? (c.layout.producerWindowControls?.buttons?.[0]?.y ?? titleRect.y + titleRect.h * .53)
             : rect.y + c.layout.panelPad * .68;
         this.#label('프로듀서 콘솔', titleRect.x + c.layout.panelPad * .45, producerTitleY, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950 });
         if (liveWindowLayout) {
@@ -1630,7 +1638,8 @@ export class AeroLiveRenderer {
             x: stage.x + inset,
             y: stage.y + inset,
             w: Math.max(1, stage.w - inset * 2),
-            h: Math.max(1, stage.h - inset * 2)
+            h: Math.max(1, stage.h - inset * 2),
+            radius: Math.max(1, this.#radius() - inset)
         };
         this.#drawContent({
             shape: 'image',
@@ -1646,7 +1655,6 @@ export class AeroLiveRenderer {
         this.#drawContent({
             shape: 'roundRect',
             ...target,
-            radius: Math.max(1, this.#radius() - inset),
             fill: 'rgba(5,30,51,0.07)',
             stroke: 'rgba(255,255,255,0.28)',
             lineWidth: 1
@@ -1664,7 +1672,7 @@ export class AeroLiveRenderer {
             this.#panel(rect, { fill: COLORS.GLASS_FILL, alpha: .92, tintStrength: .16 });
         }
         this.#label('실시간 채팅', rect.x + c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950 });
-        this.#label(`자유 채팅 ${integer(resources.playerMessagesRemaining)}회`, rect.x + rect.w - c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SMALL_FONT_WH), COLORS.DEEP_BLUE, { align: 'right', baseline: 'middle', weight: 850 });
+        this.#label(`남은 채팅 횟수 ${integer(resources.playerMessagesRemaining)}회`, rect.x + rect.w - c.layout.panelPad, rect.y + c.layout.panelPad * .68, this.#size(UI.SMALL_FONT_WH), COLORS.DEEP_BLUE, { align: 'right', baseline: 'middle', weight: 850 });
         if (this.#usesLiveWindowLayout()) {
             this.#macWindowControls(c.layout.chatWindowControls);
         }
@@ -1687,7 +1695,9 @@ export class AeroLiveRenderer {
     #tutorialChatPreview(target) {
         const c = this.context;
         const scale = Math.max(1, number(c.layout?.pixelScale, 1));
-        if (target === 'composer') {
+        const showComposer = target === 'composer' || target === 'chat-send';
+        const showChat = target === 'chat' || target === 'chat-send';
+        if (showComposer) {
             const rect = c.layout.composer;
             const nicknameW = Math.max(64 * scale, rect.w * .2);
             const sendW = Math.max(58 * scale, rect.w * .16);
@@ -1706,11 +1716,13 @@ export class AeroLiveRenderer {
             this.#label(c.playerName || '플레이어', rect.x + nicknameW * .5, rect.y + rect.h * .5, this.#size(UI.SMALL_FONT_WH), COLORS.AQUA, { align: 'center', baseline: 'middle', weight: 900, maxWidth: nicknameW * .82 });
             this.#label('방송에 남길 채팅을 입력하세요', rect.x + nicknameW + rect.w * .035, rect.y + rect.h * .5, this.#size(UI.SMALL_FONT_WH), 'rgba(245,254,255,0.64)', { baseline: 'middle', weight: 700, maxWidth: rect.w - nicknameW - sendW - rect.w * .08 });
             this.#label('전송', rect.x + rect.w - sendW * .5, rect.y + rect.h * .5, this.#size(UI.SMALL_FONT_WH), COLORS.INK, { align: 'center', baseline: 'middle', weight: 950, maxWidth: sendW * .8 });
-            return;
+            if (!showChat) {
+                return;
+            }
         }
 
         const chatArea = c.layout.chatArea;
-        if (target === 'chat') {
+        if (showChat) {
             const row = {
                 x: chatArea.x + chatArea.w * .045,
                 y: chatArea.y + chatArea.h * .46,
@@ -2336,9 +2348,9 @@ export class AeroLiveRenderer {
     #macWindowControls(layout, closeButton = null) {
         if (!layout || !Array.isArray(layout.buttons)) return;
         const styles = {
-            red: { top: '#FF8B85', middle: '#FF5F57', bottom: '#D93630', shadow: 'rgba(202,39,35,0.3)' },
-            yellow: { top: '#FFE37A', middle: '#FFBD2E', bottom: '#D99709', shadow: 'rgba(191,130,7,0.27)' },
-            green: { top: '#75E58D', middle: '#28C840', bottom: '#15992E', shadow: 'rgba(20,145,45,0.27)' }
+            red: { top: '#FFD0CC', middle: '#FF857E', lower: '#FF5750', bottom: '#C92824', shadow: 'rgba(202,39,35,0.3)' },
+            yellow: { top: '#FFF3BF', middle: '#FFE17A', lower: '#FFB927', bottom: '#D68E06', shadow: 'rgba(191,130,7,0.27)' },
+            green: { top: '#C7F8D0', middle: '#79E992', lower: '#27C840', bottom: '#138F2A', shadow: 'rgba(20,145,45,0.27)' }
         };
         const closeHover = closeButton?.visible && !closeButton.aeroDisabled
             ? clamp(closeButton.hoverValue, 0, 1)
@@ -2353,14 +2365,18 @@ export class AeroLiveRenderer {
                 y: control.y,
                 radius,
                 fill: {
-                    type: 'linear',
-                    x1: 0,
-                    y1: control.y - radius,
-                    x2: 0,
-                    y2: control.y + radius,
+                    type: 'radial',
+                    x0: control.x - radius * .28,
+                    y0: control.y - radius * .34,
+                    r0: 0,
+                    x1: control.x - radius * .28,
+                    y1: control.y - radius * .34,
+                    r1: radius * 1.46,
+                    fallback: style.middle,
                     stops: [
                         { offset: 0, color: style.top },
-                        { offset: .5, color: style.middle },
+                        { offset: .34, color: style.middle },
+                        { offset: .72, color: style.lower },
                         { offset: 1, color: style.bottom }
                     ]
                 },
@@ -2368,14 +2384,6 @@ export class AeroLiveRenderer {
                 lineWidth: Math.max(1, radius * .08),
                 shadowBlur: radius * (.24 + hover * .22),
                 shadowColor: style.shadow
-            });
-            this.#drawContent({
-                shape: 'circle',
-                x: control.x - radius * .24,
-                y: control.y - radius * .31,
-                radius: Math.max(1.5, radius * .32),
-                fill: COLORS.GLASS_WHITE,
-                alpha: .46 + hover * .14
             });
         }
     }
@@ -2482,21 +2490,31 @@ export class AeroLiveRenderer {
             lineWidth: 1,
             alpha: alpha * .44
         });
+        const defaultTopSheenHeight = Math.max(
+            6 * this.#uiScale(),
+            Math.min(rect.h * .11, 28 * this.#uiScale())
+        );
+        const topSheenHeight = Math.min(
+            Math.max(1, rect.h - inset * 2),
+            Number.isFinite(style.topSheenHeight) ? style.topSheenHeight : defaultTopSheenHeight
+        );
         this.#drawContent({
             shape: 'roundRect',
             x: rect.x + inset + 1,
             y: rect.y + inset + 1,
             w: Math.max(1, rect.w - (inset + 1) * 2),
-            h: Math.max(4, Math.min(rect.h * .06, 14)),
+            h: topSheenHeight,
             radius: Math.max(2, radius - inset - 1),
             fill: {
-                type: 'linear', x1: 0, y1: rect.y, x2: 0, y2: rect.y + Math.max(6, rect.h * .06),
+                type: 'linear', x1: 0, y1: rect.y + inset, x2: 0, y2: rect.y + inset + topSheenHeight,
                 stops: [
                     { offset: 0, color: COLORS.GLASS_HIGHLIGHT || 'rgba(255,255,255,0.7)' },
+                    { offset: .18, color: 'rgba(255,255,255,0.34)' },
+                    { offset: .56, color: 'rgba(255,255,255,0.1)' },
                     { offset: 1, color: 'rgba(255,255,255,0)' }
                 ]
             },
-            alpha: alpha * .3
+            alpha: alpha * (style.topSheenAlpha ?? .56)
         });
     }
 

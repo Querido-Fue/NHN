@@ -5,7 +5,7 @@ const VIGNETTE_MAX_ALPHA = 0.74;
 export const AERO_LIVE_TUTORIAL_STEPS = Object.freeze([
     Object.freeze({
         id: 'chat-send',
-        target: 'chat',
+        target: 'chat-send',
         title: '채팅 전송',
         text: '채팅을 통해 방송에 참여하고 원하는 분위기로 채팅창을 이끌어 갈 수 있습니다.'
     }),
@@ -13,13 +13,7 @@ export const AERO_LIVE_TUTORIAL_STEPS = Object.freeze([
         id: 'free-chat',
         target: 'free-chat-count',
         title: '채팅 횟수',
-        text: '1회 방송에서 3회까지 채팅을 보낼 수 있습니다.'
-    }),
-    Object.freeze({
-        id: 'chat-limit',
-        target: 'composer',
-        title: '자유 채팅 소진',
-        text: '횟수가 모두 차감되면 해당 방송에서는 더 이상 채팅을 칠 수 없습니다. 적절한 채팅으로 아쿠아의 방송을 도와주세요!'
+        text: '1회 방송에서 3회까지 채팅을 보낼 수 있습니다. 횟수가 모두 차감되면 해당 방송에서는 더 이상 채팅을 칠 수 없습니다. 적절한 채팅으로 아쿠아의 방송을 도와주세요!'
     }),
     Object.freeze({
         id: 'core-chat',
@@ -83,6 +77,9 @@ function unionRect(first, second) {
 
 /** 레이아웃의 현재 단계 대상 영역을 반환합니다. */
 function resolveTargetRect(layout, target) {
+    if (target === 'chat-send') {
+        return unionRect(layout?.chatArea, layout?.composer);
+    }
     if (target === 'free-chat-count') {
         return safeRect(layout?.freeChatCount);
     }

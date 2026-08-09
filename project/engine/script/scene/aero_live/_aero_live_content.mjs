@@ -156,10 +156,6 @@ export const AERO_LIVE_TOPIC_AMBIENT_CONTEXTS = freezeDeep({
 /** 활성 사건과 히로인 답변에 연결하는 자연스러운 시청자 반응입니다. */
 export const AERO_LIVE_AMBIENT_EVENT_CONTEXTS = freezeDeep({
     heroResponse: [
-        '아, 이제 이해됐어요!',
-        '설명해줘서 고마워요.',
-        '그 부분이 궁금했어요.',
-        '말씀하신 대로 해볼게요.',
         '저도 같은 생각이에요.',
         '그렇군요!',
         '다음 이야기도 궁금해요.'
@@ -171,8 +167,7 @@ export const AERO_LIVE_AMBIENT_EVENT_CONTEXTS = freezeDeep({
         '후원 고마워요.',
         '응원 감사합니다!',
         '같이 즐겨요!',
-        '오늘도 파이팅!',
-        '후원자님 고마워요!'
+        '오늘도 파이팅!'
     ],
     core: [
         '저도 그게 궁금했어요.',

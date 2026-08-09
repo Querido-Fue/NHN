@@ -76,12 +76,28 @@ export function resetDrawContextState(context) {
  */
 export function applyDraw2DStyles(context, cache, styles, persistentShadow) {
     let fill = styles.fill || null;
-    if (fill && typeof fill === 'object' && fill.type === 'linear') {
-        const gradient = context.createLinearGradient(fill.x1, fill.y1, fill.x2, fill.y2);
-        if (Array.isArray(fill.stops)) {
-            fill.stops.forEach((stop) => gradient.addColorStop(stop.offset, stop.color));
+    if (fill && typeof fill === 'object') {
+        let gradient = null;
+        if (fill.type === 'linear' && typeof context.createLinearGradient === 'function') {
+            gradient = context.createLinearGradient(fill.x1, fill.y1, fill.x2, fill.y2);
+        } else if (fill.type === 'radial' && typeof context.createRadialGradient === 'function') {
+            gradient = context.createRadialGradient(
+                fill.x0,
+                fill.y0,
+                fill.r0,
+                fill.x1,
+                fill.y1,
+                fill.r1
+            );
         }
-        fill = gradient;
+        if (gradient) {
+            if (Array.isArray(fill.stops)) {
+                fill.stops.forEach((stop) => gradient.addColorStop(stop.offset, stop.color));
+            }
+            fill = gradient;
+        } else if (fill.type === 'linear' || fill.type === 'radial') {
+            fill = fill.fallback || fill.stops?.[0]?.color || null;
+        }
     }
 
     if (cache.fillStyle !== fill) {

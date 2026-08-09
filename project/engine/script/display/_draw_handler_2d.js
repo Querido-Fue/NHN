@@ -209,7 +209,7 @@ export class DrawHandler2D {
 
     /**
      * 렌더 명령에 적용 가능한 clip rect가 있는지 반환합니다.
-     * @param {{x:number,y:number,w:number,h:number}|null|undefined} clipRect - 클리핑 사각형입니다.
+     * @param {{x:number,y:number,w:number,h:number,radius?:number}|null|undefined} clipRect - 클리핑 사각형입니다.
      * @returns {boolean} clip rect 적용 가능 여부입니다.
      * @private
      */
@@ -224,14 +224,21 @@ export class DrawHandler2D {
     }
 
     /**
-     * 2D 컨텍스트에 사각형 클리핑 영역을 적용합니다.
+     * 2D 컨텍스트에 사각형 또는 둥근 사각형 클리핑 영역을 적용합니다.
      * @param {CanvasRenderingContext2D} context - 대상 2D 컨텍스트입니다.
-     * @param {{x:number,y:number,w:number,h:number}} clipRect - 클리핑 사각형입니다.
+     * @param {{x:number,y:number,w:number,h:number,radius?:number}} clipRect - 클리핑 사각형입니다.
      * @private
      */
     #applyClipRect(context, clipRect) {
         context.beginPath();
-        context.rect(clipRect.x, clipRect.y, clipRect.w, clipRect.h);
+        const radius = Number.isFinite(clipRect.radius)
+            ? Math.max(0, Math.min(clipRect.radius, clipRect.w * .5, clipRect.h * .5))
+            : 0;
+        if (radius > 0 && typeof context.roundRect === 'function') {
+            context.roundRect(clipRect.x, clipRect.y, clipRect.w, clipRect.h, radius);
+        } else {
+            context.rect(clipRect.x, clipRect.y, clipRect.w, clipRect.h);
+        }
         context.clip();
     }
 
