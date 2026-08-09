@@ -447,9 +447,14 @@ export class AeroLiveScene extends BaseScene {
         this.WH = getWH();
         this.UIWW = getUIWW();
         this.UIOffsetX = getUIOffsetX();
+        this.layoutPixelScale = Math.max(1, Math.min(
+            this.UIWW / 1920,
+            this.WH / 1080
+        ));
 
         const ux = (percent) => this.UIWW * (percent / 100);
         const vy = (percent) => this.WH * (percent / 100);
+        const px = (value) => value * this.layoutPixelScale;
         const safe = ux(UI.SAFE_MARGIN_UIWW);
         const gap = ux(UI.PANEL_GAP_UIWW);
         const contentX = this.UIOffsetX + safe;
@@ -471,7 +476,7 @@ export class AeroLiveScene extends BaseScene {
         const chatContent = mapLiveRect(liveLayout.CHAT_CONTENT);
         const producerFrame = mapLiveRect(liveLayout.PRODUCER_FRAME);
         const producerContent = mapLiveRect(liveLayout.PRODUCER_CONTENT);
-        const titleInset = Math.max(3, panelPad * 0.38);
+        const titleInset = Math.max(px(3), panelPad * 0.38);
         const mainWindowControls = createMacWindowControls(mainFrame, mainStatus.y, this.WH);
         const chatWindowControls = createMacWindowControls(chatFrame, chatContent.y, this.WH);
         const producerWindowControls = createMacWindowControls(producerFrame, producerContent.y, this.WH);
@@ -480,6 +485,7 @@ export class AeroLiveScene extends BaseScene {
             safe,
             gap,
             panelPad,
+            pixelScale: this.layoutPixelScale,
             backdrop: { x: this.UIOffsetX, y: 0, w: this.UIWW, h: this.WH },
             mainFrame,
             chatFrame,
@@ -513,14 +519,14 @@ export class AeroLiveScene extends BaseScene {
 
         this.layout.endButton = copyRect(mainWindowControls.buttons[0]?.hitRect);
 
-        const producerPad = Math.max(4, panelPad * 0.75);
+        const producerPad = Math.max(px(4), panelPad * 0.75);
         const producerTopPad = Math.max(producerPad, panelPad * 1.15);
-        const producerGap = Math.max(4, gap * 0.62);
+        const producerGap = Math.max(px(4), gap * 0.62);
         const producerInnerX = producerContent.x + producerPad;
         const producerInnerW = Math.max(1, producerContent.w - producerPad * 2);
-        const metricGap = Math.max(3, producerGap * 0.7);
+        const metricGap = Math.max(px(3), producerGap * 0.7);
         const metricH = Math.min(
-            Math.max(vy(5.8), 34),
+            Math.max(vy(5.8), px(34)),
             Math.max(1, producerContent.h * 0.28)
         );
         const metricW = Math.max(1, (producerInnerW - metricGap * 3) / 4);
@@ -553,7 +559,7 @@ export class AeroLiveScene extends BaseScene {
         const donationGridW = Math.max(1, producerInnerX + producerInnerW - donationGridX);
         const donationColumns = 3;
         const donationRows = 2;
-        const donationButtonGap = Math.max(3, producerGap * 0.72);
+        const donationButtonGap = Math.max(px(3), producerGap * 0.72);
         const donationActionW = Math.max(
             1,
             (donationGridW - donationButtonGap * (donationColumns - 1)) / donationColumns
@@ -595,12 +601,12 @@ export class AeroLiveScene extends BaseScene {
             h: Math.max(1, this.layout.heroDialogue.y - gap - stageY)
         };
 
-        const chatPad = Math.max(5, panelPad * 0.75);
-        const chatGap = Math.max(4, gap * 0.7);
+        const chatPad = Math.max(px(5), panelPad * 0.75);
+        const chatGap = Math.max(px(4), gap * 0.7);
         const rightInnerX = chatContent.x + chatPad;
         const rightInnerW = Math.max(1, chatContent.w - chatPad * 2);
-        const composerH = Math.max(vy(UI.DOM_INPUT_HEIGHT_WH), 34);
-        const coreActionH = Math.max(vy(UI.CORE_ACTION_HEIGHT_WH), 30);
+        const composerH = Math.max(vy(UI.DOM_INPUT_HEIGHT_WH), px(34));
+        const coreActionH = Math.max(vy(UI.CORE_ACTION_HEIGHT_WH), px(30));
         this.layout.composer = {
             x: rightInnerX,
             y: chatContent.y + chatContent.h - chatPad - composerH,
@@ -608,7 +614,7 @@ export class AeroLiveScene extends BaseScene {
             h: composerH
         };
         const coreActionsY = this.layout.composer.y - chatGap - coreActionH;
-        const coreButtonGap = Math.max(3, chatGap * 0.72);
+        const coreButtonGap = Math.max(px(3), chatGap * 0.72);
         const coreButtonCount = Math.max(1, CORE_ACTIONS.length);
         const coreButtonW = (rightInnerW - coreButtonGap * Math.max(0, coreButtonCount - 1)) / coreButtonCount;
         this.layout.coreActionRects = CORE_ACTIONS.map((action, index) => ({
@@ -618,7 +624,7 @@ export class AeroLiveScene extends BaseScene {
             w: coreButtonW,
             h: coreActionH
         }));
-        const chatHeaderH = Math.max(vy(4.5), 28);
+        const chatHeaderH = Math.max(vy(4.5), px(28));
         this.layout.chatArea = {
             x: rightInnerX,
             y: chatContent.y + chatPad + chatHeaderH,
@@ -658,11 +664,12 @@ export class AeroLiveScene extends BaseScene {
      * @private
      */
     #buildModalAndResultLayout() {
-        const nicknameW = Math.min(this.UIWW * 0.54, 680);
-        const nicknameH = Math.min(this.WH * 0.48, 360);
+        const px = (value) => value * Math.max(1, finiteNumber(this.layoutPixelScale, 1));
+        const nicknameW = Math.min(this.UIWW * 0.54, px(680));
+        const nicknameH = Math.min(this.WH * 0.48, px(360));
         const nicknameX = this.UIOffsetX + (this.UIWW - nicknameW) * 0.5;
         const nicknameY = (this.WH - nicknameH) * 0.5;
-        const nicknameInputH = Math.max(54, this.WH * 0.082);
+        const nicknameInputH = Math.max(px(54), this.WH * 0.082);
         this.layout.nicknamePanel = {
             x: nicknameX,
             y: nicknameY,
@@ -676,13 +683,13 @@ export class AeroLiveScene extends BaseScene {
             h: nicknameInputH
         };
 
-        const modalW = Math.min(this.UIWW * 0.44, 560);
-        const modalH = Math.min(this.WH * 0.36, 280);
+        const modalW = Math.min(this.UIWW * 0.44, px(560));
+        const modalH = Math.min(this.WH * 0.36, px(280));
         const modalX = this.UIOffsetX + (this.UIWW - modalW) * 0.5;
         const modalY = (this.WH - modalH) * 0.5;
         const buttonGap = this.layout.gap;
         const buttonW = (modalW - this.layout.panelPad * 2 - buttonGap) * 0.5;
-        const buttonH = Math.max(42, this.WH * 0.067);
+        const buttonH = Math.max(px(42), this.WH * 0.067);
         this.layout.modal = { x: modalX, y: modalY, w: modalW, h: modalH };
         this.layout.modalCancel = {
             x: modalX + this.layout.panelPad,
@@ -697,8 +704,8 @@ export class AeroLiveScene extends BaseScene {
             h: buttonH
         };
 
-        const resultButtonW = Math.min(220, this.UIWW * 0.18);
-        const resultButtonH = Math.max(44, this.WH * 0.071);
+        const resultButtonW = Math.min(px(220), this.UIWW * 0.18);
+        const resultButtonH = Math.max(px(44), this.WH * 0.071);
         const resultButtonY = this.WH * 0.82;
         this.layout.resultRestart = {
             x: this.UIOffsetX + this.UIWW * 0.5 - resultButtonW - buttonGap * 0.5,

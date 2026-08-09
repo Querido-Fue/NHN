@@ -29,6 +29,7 @@ export const AERO_LIVE_SCENE_CONSTANTS = Object.freeze({
             })
         }),
         LIVE_STAGE_BACKGROUND_PATH: '../asset/image/aero_live/broadcast_background_mac.png',
+        DONATION_ALERT_GIF_PATH: '../asset/image/1f33813841b4cc1b.gif',
         LIVE_WINDOW_LAYOUT: Object.freeze({
             REFERENCE_WIDTH: 3840,
             REFERENCE_HEIGHT: 2160,
@@ -90,6 +91,7 @@ export const AERO_LIVE_SCENE_CONSTANTS = Object.freeze({
         DOM_SEND_WIDTH_UIWW: 5.3,
         CORE_ACTION_HEIGHT_WH: 4.7,
         DONATION_ACTION_HEIGHT_WH: 4.8,
+        DONATION_ALERT_SECONDS: 5.5,
         STATUS_TOAST_SECONDS: 3.2,
         TITLE_FONT_WH: 4.6,
         SUBTITLE_FONT_WH: 2.0,

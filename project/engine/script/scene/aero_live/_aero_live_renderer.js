@@ -16,6 +16,7 @@ const UI = AERO_CONSTANTS.UI;
 const COLORS = AERO_CONSTANTS.COLORS;
 const WALLPAPER = AERO_CONSTANTS.ASSET.WALLPAPER || {};
 const LIVE_STAGE_BACKGROUND_PATH = AERO_CONSTANTS.ASSET.LIVE_STAGE_BACKGROUND_PATH || '';
+const DONATION_ALERT_GIF_PATH = AERO_CONSTANTS.ASSET.DONATION_ALERT_GIF_PATH || '';
 const HERO_POSE_PATHS = AERO_CONSTANTS.ASSET.HERO_POSE_PATHS || {};
 const HERO_EXPRESSION_POSES = AERO_CONSTANTS.ASSET.HERO_EXPRESSION_POSES || {};
 const HERO_FALLBACK_POSE = AERO_CONSTANTS.ASSET.HERO_FALLBACK_POSE || 'neutral';
@@ -44,6 +45,11 @@ const GLASS_STYLE = Object.freeze({
     SHADOW_RADIUS: 9,
     SHADOW_OFFSET_Y: 4
 });
+const DONATION_ALERT_SECONDS = Math.max(
+    1,
+    Number(AERO_CONSTANTS.UI?.DONATION_ALERT_SECONDS) || 5.5
+);
+const TOP_BAR_TIMER_COLOR = '#28566E';
 /**
  * 숫자를 지정한 범위로 제한합니다.
  * @param {*} value - 원본 값입니다.
@@ -137,6 +143,14 @@ export class AeroLiveRenderer {
             failed: false
         };
         this.liveStageBackgroundRenderedThisFrame = false;
+        this.donationAlertAsset = {
+            path: DONATION_ALERT_GIF_PATH,
+            image: null,
+            ready: false,
+            failed: !DONATION_ALERT_GIF_PATH
+        };
+        this.donationAlertEventKey = '';
+        this.donationAlertStartedAt = 0;
         this.disableTransparency = typeof getSetting === 'function'
             && getSetting('disableTransparency') === true;
         this.heroReady = false;
@@ -387,6 +401,7 @@ export class AeroLiveRenderer {
         this.lastDrawMode = context.mode;
         if (context.mode === 'live' && previousMode !== 'live') {
             this.#resetHeroMotionTimeline(context.elapsedVisualSeconds);
+            this.#resetDonationAlertTimeline(context.elapsedVisualSeconds);
         }
         this.liveStageBackgroundRenderedThisFrame = false;
         this.#ensureGlassSession();
@@ -449,6 +464,18 @@ export class AeroLiveRenderer {
             failed: true
         };
         this.liveStageBackgroundRenderedThisFrame = false;
+        if (this.donationAlertAsset?.image) {
+            this.donationAlertAsset.image.onload = null;
+            this.donationAlertAsset.image.onerror = null;
+        }
+        this.donationAlertAsset = {
+            path: DONATION_ALERT_GIF_PATH,
+            image: null,
+            ready: false,
+            failed: true
+        };
+        this.donationAlertEventKey = '';
+        this.donationAlertStartedAt = 0;
         this.glassSession?.release?.();
         this.glassSession = null;
         this.glassSessionInitialized = true;
@@ -490,6 +517,34 @@ export class AeroLiveRenderer {
             });
         } catch {
             this.wallpaperEffectPass = null;
+        }
+    }
+
+    /** 후원 발생 때만 재생할 GIF를 한 번 불러옵니다. @private */
+    #ensureDonationAlertAsset() {
+        const record = this.donationAlertAsset;
+        if (this.destroyed
+            || !record?.path
+            || record.image
+            || record.ready
+            || record.failed) {
+            return;
+        }
+        try {
+            const image = new Image();
+            record.image = image;
+            const settle = (ready) => {
+                if (this.destroyed || record.ready || record.failed) {
+                    return;
+                }
+                record.ready = ready;
+                record.failed = !ready;
+            };
+            image.onload = () => settle(true);
+            image.onerror = () => settle(false);
+            image.src = record.path;
+        } catch {
+            record.failed = true;
         }
     }
 
@@ -899,18 +954,52 @@ export class AeroLiveRenderer {
         this.#label('● LIVE', pill.x + pill.w / 2, pill.y + pill.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 950 });
         const titleX = pill.x + pill.w + pad * .7;
         this.#label(c.snapshot?.topic?.title || 'AERO LIVE', titleX, rect.y + rect.h * .34, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950, maxWidth: rect.w * .26 });
-        this.#label(clock(c.snapshot?.elapsedSeconds), titleX, rect.y + rect.h * .68, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { baseline: 'middle', weight: 700 });
+        this.#label(clock(c.snapshot?.elapsedSeconds), titleX, rect.y + rect.h * .68, this.#size(UI.SMALL_FONT_WH), TOP_BAR_TIMER_COLOR, { baseline: 'middle', weight: 700 });
         if (this.#usesLiveWindowLayout()) {
             this.#macWindowControls(c.layout.mainWindowControls, c.endButton);
         } else {
             this.#button(c.endButton, '종료', COLORS.DARK_GLASS, COLORS.NEGATIVE, COLORS.GLASS_WHITE);
         }
-        const endX = c.layout.endButton.x - pad;
-        const statW = Math.min(125, rect.w * .1);
+        const mainFrame = c.layout.mainFrame || rect;
+        const leftInset = Math.max(0, pill.x - mainFrame.x);
+        const statsRight = mainFrame.x + mainFrame.w - leftInset;
+        const statScale = this.#uiScale();
+        const statGap = Math.max(6 * statScale, rect.h * .075);
+        const desiredStatW = clamp(
+            rect.w * .104,
+            104 * statScale,
+            156 * statScale
+        );
+        const availableStatW = Math.max(
+            1,
+            (statsRight - (titleX + rect.w * .16) - statGap * 2) / 3
+        );
+        const statW = Math.min(
+            desiredStatW,
+            availableStatW
+        );
+        const statsPanel = {
+            x: statsRight - (statW * 3 + statGap * 2),
+            y: rect.y + rect.h * .13,
+            w: statW * 3 + statGap * 2,
+            h: rect.h * .74
+        };
+        this.#panel(statsPanel, {
+            role: 'live-top-stats',
+            fill: 'rgba(8,48,74,0.4)',
+            flatFill: 'rgba(8,48,74,0.56)',
+            stroke: 'rgba(245,254,255,0.34)',
+            edgeColor: 'rgba(245,254,255,0.38)',
+            tintColor: COLORS.DEEP_BLUE,
+            tintStrength: .045,
+            edgeStrength: .12,
+            shadowRadius: 0,
+            lineWidth: 1
+        });
         [['시청자', integer(m.viewers), COLORS.DEEP_BLUE], ['참여도', `${Math.round(number(m.engagement))}%`, COLORS.AQUA], ['수익', `${integer(m.revenue)}원`, COLORS.POSITIVE]].forEach((item, i) => {
-            const x = endX - statW * (3 - i);
-            this.#label(item[0], x + statW / 2, rect.y + rect.h * .3, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'center', baseline: 'middle', weight: 700 });
-            this.#label(item[1], x + statW / 2, rect.y + rect.h * .65, this.#size(UI.METRIC_FONT_WH), item[2], { align: 'center', baseline: 'middle', weight: 950, maxWidth: statW * .92 });
+            const x = statsPanel.x + i * (statW + statGap);
+            this.#label(item[0], x + statW / 2, statsPanel.y + statsPanel.h * .3, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'center', baseline: 'middle', weight: 700, maxWidth: statW * .92 });
+            this.#label(item[1], x + statW / 2, statsPanel.y + statsPanel.h * .68, this.#size(UI.METRIC_FONT_WH), item[2], { align: 'center', baseline: 'middle', weight: 950, maxWidth: statW * .92 });
         });
     }
 
@@ -1055,6 +1144,7 @@ export class AeroLiveRenderer {
             this.#drawContent({ shape: 'circle', x: stage.x + stage.w / 2, y: stage.y + stage.h * .49, radius: Math.min(stage.w, stage.h) * .22, fill: COLORS.AQUA, alpha: .45 });
             this.#label('AERO', stage.x + stage.w / 2, stage.y + stage.h * .49, this.#size(UI.TITLE_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 950 });
         }
+        this.#donationAlert(stage);
         if (!liveWindowLayout) {
             this.#drawContent({
                 shape: 'roundRect', ...stage, radius: this.#radius(), fill: false,
@@ -1115,6 +1205,122 @@ export class AeroLiveRenderer {
         this.heroResponseChangedAt = visualSeconds;
         this.heroEventKey = '';
         this.heroEventChangedAt = visualSeconds;
+    }
+
+    /** 방송 전환 뒤 이전 후원 알림이 새 방송에 이어지지 않도록 초기화합니다. @private */
+    #resetDonationAlertTimeline(elapsedSeconds) {
+        this.donationAlertEventKey = '';
+        this.donationAlertStartedAt = Math.max(0, number(elapsedSeconds));
+    }
+
+    /** 캐릭터 오른쪽 위에 후원자·금액·메시지와 GIF를 잠시 표시합니다. @private */
+    #donationAlert(stage) {
+        const c = this.context;
+        const donation = c.snapshot?.activeDonation;
+        if (!donation || !stage) {
+            this.donationAlertEventKey = '';
+            return;
+        }
+
+        const eventKey = [
+            donation.id,
+            donation.donationId,
+            donation.author,
+            donation.amount,
+            donation.text
+        ].map((value) => text(value, 180)).join('\u0001');
+        const visualSeconds = Math.max(0, number(c.elapsedVisualSeconds));
+        if (eventKey !== this.donationAlertEventKey) {
+            this.donationAlertEventKey = eventKey;
+            this.donationAlertStartedAt = visualSeconds;
+        }
+
+        const ageSeconds = Math.max(0, visualSeconds - this.donationAlertStartedAt);
+        if (ageSeconds >= DONATION_ALERT_SECONDS) {
+            return;
+        }
+        this.#ensureDonationAlertAsset();
+
+        const fadeIn = clamp(ageSeconds / .22, 0, 1);
+        const fadeOut = clamp((DONATION_ALERT_SECONDS - ageSeconds) / .45, 0, 1);
+        const alpha = fadeIn * fadeOut;
+        const card = {
+            x: stage.x + stage.w * .575,
+            y: stage.y + stage.h * .065 + (1 - fadeIn) * stage.h * .035,
+            w: Math.max(150, stage.w * .36),
+            h: Math.max(96, Math.min(stage.h * .38, stage.w * .28))
+        };
+        card.w = Math.min(card.w, stage.x + stage.w * .95 - card.x);
+        card.h = Math.min(card.h, stage.y + stage.h * .58 - card.y);
+        if (card.w <= 0 || card.h <= 0 || alpha <= 0) {
+            return;
+        }
+
+        const graphicSize = Math.max(34, Math.min(card.w * .23, card.h * .39));
+        const graphic = {
+            x: card.x + (card.w - graphicSize) / 2,
+            y: card.y + card.h * .08,
+            w: graphicSize,
+            h: graphicSize
+        };
+        const gif = this.donationAlertAsset?.ready
+            ? this.donationAlertAsset.image
+            : null;
+        if (gif) {
+            this.#drawContent({
+                shape: 'image',
+                image: gif,
+                sx: 0,
+                sy: 0,
+                sw: Math.max(1, number(gif.naturalWidth || gif.width, 1)),
+                sh: Math.max(1, number(gif.naturalHeight || gif.height, 1)),
+                ...graphic,
+                smoothing: true,
+                alpha
+            });
+        } else {
+            this.#drawContent({
+                shape: 'circle',
+                x: graphic.x + graphic.w / 2,
+                y: graphic.y + graphic.h / 2,
+                radius: graphic.w * .42,
+                fill: COLORS.AQUA,
+                alpha: alpha * .7
+            });
+            this.#label('♥', graphic.x + graphic.w / 2, graphic.y + graphic.h / 2, graphic.h * .46, COLORS.GLASS_WHITE, {
+                align: 'center',
+                baseline: 'middle',
+                weight: 950,
+                alpha
+            });
+        }
+
+        const author = text(donation.author || donation.viewer_id || '시청자', 18) || '시청자';
+        const title = `${author}님이 ${integer(donation.amount)}원 후원!`;
+        this.#label(title, card.x + card.w / 2, card.y + card.h * .57, Math.min(this.#size(UI.SUBTITLE_FONT_WH) * .76, card.h * .17), COLORS.AQUA, {
+            align: 'center',
+            baseline: 'middle',
+            weight: 950,
+            maxWidth: card.w * .9,
+            alpha,
+            shadowBlur: 5,
+            shadowColor: 'rgba(3,8,17,0.82)'
+        });
+        this.#wrapped(
+            text(donation.text, 96) || '후원해 주셔서 감사합니다!',
+            card.x + card.w * .075,
+            card.y + card.h * .7,
+            card.w * .85,
+            Math.min(this.#size(UI.SMALL_FONT_WH), card.h * .12),
+            COLORS.GLASS_WHITE,
+            2,
+            'center',
+            {
+                alpha,
+                shadowBlur: 5,
+                shadowColor: 'rgba(3,8,17,0.82)'
+            }
+        );
     }
 
     /**
@@ -1844,10 +2050,18 @@ export class AeroLiveRenderer {
     }
 
     /** 여러 줄 Canvas 텍스트를 문자 단위로 감싸 그립니다. @private */
-    #wrapped(value, x, y, width, size, color, maxLines = 3, align = 'left') {
-        const font = createFontString({ weight: 750, sizePx: size, family: FONT_FAMILY });
+    #wrapped(value, x, y, width, size, color, maxLines = 3, align = 'left', options = {}) {
+        const weight = options.weight || 750;
+        const font = createFontString({ weight, sizePx: size, family: FONT_FAMILY });
         const lines = wrapTextByCharacters(this.#displayText(value, 600), { maxWidth: width, maxLines, measureWidth: (candidate) => measureText(candidate, font) });
-        lines.forEach((line, index) => this.#label(line, align === 'center' ? x + width / 2 : x, y + index * size * 1.28, size, color, { align, weight: 750, maxWidth: width }));
+        lines.forEach((line, index) => this.#label(line, align === 'center' ? x + width / 2 : x, y + index * size * 1.28, size, color, {
+            align,
+            weight,
+            maxWidth: width,
+            alpha: options.alpha,
+            shadowBlur: options.shadowBlur,
+            shadowColor: options.shadowColor
+        }));
     }
 
     /** 세로 원본의 상반신 crop에 하단 앵커형 호흡·탄성 transform을 적용합니다. @private */
@@ -1898,6 +2112,15 @@ export class AeroLiveRenderer {
     /** WH 백분율 폰트 크기를 내부 픽셀로 바꿉니다. @private */
     #size(percent) {
         return Math.max(9, this.context.WH * number(percent, 1.5) / 100);
+    }
+
+    /** 1080p 기준의 고정 픽셀 값을 고해상도에서도 같은 비율로 유지합니다. @private */
+    #uiScale() {
+        const c = this.context || {};
+        return Math.max(1, Math.min(
+            Math.max(1, number(c.UIWW, c.WW)) / 1920,
+            Math.max(1, number(c.WH)) / 1080
+        ));
     }
 
     /** 현재 화면 비율의 공통 패널 반경을 반환합니다. @private */
