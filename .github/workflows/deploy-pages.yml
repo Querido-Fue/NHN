@@ -28,7 +28,7 @@ jobs:
         run: |
           mkdir -p dist
           cp -R project/engine project/asset project/license dist/
-          cp project/index.html project/credits.html dist/
+          cp project/index.html dist/
           touch dist/.nojekyll
 
       - name: Configure Pages
