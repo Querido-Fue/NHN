@@ -3,6 +3,18 @@
  */
 export const AERO_LIVE_SCENE_CONSTANTS = Object.freeze({
     ASSET: Object.freeze({
+        TOPIC_SELECT_ARTWORK: Object.freeze({
+            PATH: '../asset/image/title.png',
+            SOURCE_WIDTH: 1536,
+            SOURCE_HEIGHT: 1024,
+            ICON_RECTS: Object.freeze({
+                game: Object.freeze({ x: 12, y: 36, w: 362, h: 310 }),
+                cooking: Object.freeze({ x: 382, y: 28, w: 392, h: 322 }),
+                chatting: Object.freeze({ x: 8, y: 348, w: 374, h: 282 }),
+                movie: Object.freeze({ x: 382, y: 348, w: 398, h: 304 }),
+                issue: Object.freeze({ x: 12, y: 634, w: 430, h: 352 })
+            })
+        }),
         WALLPAPER: Object.freeze({
             BASE_PATH: '../asset/image/aero_live/wallpaper/ocean_rings_base.png',
             NORMAL_PATH: '../asset/image/aero_live/wallpaper/ocean_rings_normal.png',

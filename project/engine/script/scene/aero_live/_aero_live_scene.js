@@ -29,6 +29,7 @@ import { AeroLiveTutorial } from './_aero_live_tutorial.mjs';
 const AERO_CONSTANTS = getData('AERO_LIVE_SCENE_CONSTANTS');
 const UI = AERO_CONSTANTS.UI;
 const COLORS = AERO_CONSTANTS.COLORS;
+const TOPIC_SELECT_ARTWORK = AERO_CONSTANTS.ASSET.TOPIC_SELECT_ARTWORK || {};
 const TRANSPARENT = 'rgba(255,255,255,0)';
 const MODE_NICKNAME = 'nickname';
 const MODE_TOPIC_SELECT = 'topicSelect';
@@ -693,21 +694,39 @@ export class AeroLiveScene extends BaseScene {
      * @private
      */
     #buildTopicLayout() {
-        const gap = this.UIWW * (UI.TOPIC_CARD_GAP_UIWW / 100);
-        const safe = this.layout.safe;
-        const contentX = this.UIOffsetX + safe;
-        const contentW = this.UIWW - safe * 2;
-        const cardCount = Math.max(1, this.topicSummaries.length);
-        const cardW = Math.max(1, (contentW - gap * (cardCount - 1)) / cardCount);
-        const cardH = this.WH * (UI.TOPIC_CARD_HEIGHT_WH / 100);
-        const cardY = this.WH * 0.335;
-        this.layout.topicCards = this.topicSummaries.map((topic, index) => ({
-            id: topic.id,
-            x: contentX + index * (cardW + gap),
-            y: cardY,
-            w: cardW,
-            h: cardH
-        }));
+        const sourceW = Math.max(1, finiteNumber(TOPIC_SELECT_ARTWORK.SOURCE_WIDTH, 1536));
+        const sourceH = Math.max(1, finiteNumber(TOPIC_SELECT_ARTWORK.SOURCE_HEIGHT, 1024));
+        const scale = Math.min(this.UIWW / sourceW, this.WH / sourceH);
+        const artworkW = sourceW * scale;
+        const artworkH = sourceH * scale;
+        const artworkX = this.UIOffsetX + this.UIWW - artworkW;
+        const artworkY = this.WH - artworkH;
+        const iconRects = TOPIC_SELECT_ARTWORK.ICON_RECTS || {};
+        const fallbackIcons = Object.values(iconRects);
+
+        this.layout.topicArtwork = {
+            x: artworkX,
+            y: artworkY,
+            w: artworkW,
+            h: artworkH,
+            sourceW,
+            sourceH
+        };
+        this.layout.topicCards = this.topicSummaries.map((topic, index) => {
+            const icon = iconRects[topic.id] || fallbackIcons[index] || {
+                x: sourceW * .08,
+                y: sourceH * (.08 + index * .17),
+                w: sourceW * .3,
+                h: sourceH * .13
+            };
+            return {
+                id: topic.id,
+                x: artworkX + finiteNumber(icon.x, 0) * scale,
+                y: artworkY + finiteNumber(icon.y, 0) * scale,
+                w: Math.max(1, finiteNumber(icon.w, sourceW * .3) * scale),
+                h: Math.max(1, finiteNumber(icon.h, sourceH * .13) * scale)
+            };
+        });
     }
 
     /**

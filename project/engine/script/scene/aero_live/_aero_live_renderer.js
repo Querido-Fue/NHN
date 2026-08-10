@@ -21,6 +21,8 @@ const AERO_CONSTANTS = getData('AERO_LIVE_SCENE_CONSTANTS');
 const UI = AERO_CONSTANTS.UI;
 const COLORS = AERO_CONSTANTS.COLORS;
 const WALLPAPER = AERO_CONSTANTS.ASSET.WALLPAPER || {};
+const TOPIC_SELECT_ARTWORK = AERO_CONSTANTS.ASSET.TOPIC_SELECT_ARTWORK || {};
+const TOPIC_SELECT_ARTWORK_PATH = TOPIC_SELECT_ARTWORK.PATH || '';
 const LIVE_STAGE_BACKGROUND_PATH = AERO_CONSTANTS.ASSET.LIVE_STAGE_BACKGROUND_PATH || '';
 const DONATION_ALERT_GIF_PATH = AERO_CONSTANTS.ASSET.DONATION_ALERT_GIF_PATH || '';
 const HERO_POSE_PATHS = AERO_CONSTANTS.ASSET.HERO_POSE_PATHS || {};
@@ -156,6 +158,12 @@ export class AeroLiveRenderer {
         this.wallpaperRenderedThisFrame = false;
         this.wallpaperAssetRecords = [];
         this.wallpaperAssets = {};
+        this.topicSelectArtwork = {
+            path: TOPIC_SELECT_ARTWORK_PATH,
+            image: null,
+            ready: false,
+            failed: !TOPIC_SELECT_ARTWORK_PATH
+        };
         this.liveStageBackground = {
             path: LIVE_STAGE_BACKGROUND_PATH,
             image: null,
@@ -255,6 +263,23 @@ export class AeroLiveRenderer {
             this.liveStageBackground.failed = true;
         }
 
+        if (TOPIC_SELECT_ARTWORK_PATH) {
+            const image = new Image();
+            const record = this.topicSelectArtwork;
+            record.image = image;
+            pendingLoads.push(new Promise((resolve) => {
+                const settle = (ready) => {
+                    if (record.ready || record.failed) return;
+                    record.ready = ready;
+                    record.failed = !ready;
+                    resolve();
+                };
+                image.onload = () => settle(true);
+                image.onerror = () => settle(false);
+            }));
+            image.src = TOPIC_SELECT_ARTWORK_PATH;
+        }
+
         for (const [rawPose, rawPath] of Object.entries(HERO_POSE_PATHS)) {
             const pose = String(rawPose || '').trim().toLowerCase();
             const path = String(rawPath || '').trim();
@@ -300,14 +325,15 @@ export class AeroLiveRenderer {
     }
 
     /**
-     * wallpaper 네 장, 라이브 stage 배경과 히로인 이미지의 로드 성공 또는 실패가 확정될 때까지 기다립니다.
+     * wallpaper 네 장, 주제 선택 일러스트, 라이브 stage 배경과 히로인 이미지의 로드 성공 또는 실패가 확정될 때까지 기다립니다.
      * @returns {Promise<void>} 이미지 로드 완료 Promise입니다.
      */
     whenReady() {
         const heroSettled = this.heroReady || this.heroFailed;
         const wallpaperSettled = this.wallpaperAssetRecords.every((record) => record.ready || record.failed);
+        const topicArtworkSettled = this.topicSelectArtwork.ready || this.topicSelectArtwork.failed;
         const liveStageSettled = this.liveStageBackground.ready || this.liveStageBackground.failed;
-        return this.destroyed || (heroSettled && wallpaperSettled && liveStageSettled)
+        return this.destroyed || (heroSettled && wallpaperSettled && topicArtworkSettled && liveStageSettled)
             ? Promise.resolve()
             : this.readyPromise;
     }
@@ -367,6 +393,18 @@ export class AeroLiveRenderer {
             ready: record.ready === true,
             failed: record.failed === true,
             renderedThisFrame: this.liveStageBackgroundRenderedThisFrame === true,
+            src: record.image?.src || record.path || '',
+            naturalWidth: record.image?.naturalWidth || 0,
+            naturalHeight: record.image?.naturalHeight || 0
+        };
+    }
+
+    /** 주제 선택 원화의 로드 상태를 반환합니다. */
+    getTopicSelectArtworkAssetStatus() {
+        const record = this.topicSelectArtwork || {};
+        return {
+            ready: record.ready === true,
+            failed: record.failed === true,
             src: record.image?.src || record.path || '',
             naturalWidth: record.image?.naturalWidth || 0,
             naturalHeight: record.image?.naturalHeight || 0
@@ -483,6 +521,16 @@ export class AeroLiveRenderer {
         this.wallpaperAssetRecords = [];
         this.wallpaperAssets = {};
         this.wallpaperRenderedThisFrame = false;
+        if (this.topicSelectArtwork?.image) {
+            this.topicSelectArtwork.image.onload = null;
+            this.topicSelectArtwork.image.onerror = null;
+        }
+        this.topicSelectArtwork = {
+            path: TOPIC_SELECT_ARTWORK_PATH,
+            image: null,
+            ready: false,
+            failed: true
+        };
         if (this.liveStageBackground?.image) {
             this.liveStageBackground.image.onload = null;
             this.liveStageBackground.image.onerror = null;
@@ -903,8 +951,148 @@ export class AeroLiveRenderer {
         );
     }
 
-    /** 다섯 방송 주제 카드와 조작 안내를 그립니다. @private */
+    /** title 원화 위에 다섯 방송 주제 선택 영역을 그립니다. @private */
     #topics() {
+        const c = this.context;
+        const artwork = this.topicSelectArtwork;
+        const artworkRect = c.layout?.topicArtwork;
+        if (!artwork?.ready || !artwork.image || !artworkRect) {
+            this.#topicCardsFallback();
+            return;
+        }
+
+        this.#drawContent({
+            shape: 'image',
+            image: artwork.image,
+            x: artworkRect.x,
+            y: artworkRect.y,
+            w: artworkRect.w,
+            h: artworkRect.h,
+            smoothing: true,
+            clipRect: c.layout.backdrop
+        });
+
+        const headingX = c.UIOffsetX + Math.max(22 * this.#uiScale(), c.UIWW * .018);
+        const headingWidth = Math.max(150, c.UIWW * .27);
+        this.#label('AERO LIVE', headingX, c.WH * .048, this.#size(UI.TITLE_FONT_WH) * .72, COLORS.INK, {
+            weight: 950,
+            shadowBlur: 5,
+            shadowColor: 'rgba(245,254,255,0.78)',
+            maxWidth: headingWidth
+        });
+        this.#label(
+            `${c.playerName || '플레이어'}님, 오늘 방송 주제를 선택해 주세요`,
+            headingX,
+            c.WH * .102,
+            this.#size(UI.SMALL_FONT_WH),
+            COLORS.INK,
+            {
+                weight: 850,
+                maxWidth: headingWidth,
+                shadowBlur: 3,
+                shadowColor: 'rgba(245,254,255,0.72)'
+            }
+        );
+
+        c.topicButtons.forEach((button, index) => {
+            const topic = c.topicSummaries[index] || {};
+            const rect = this.#buttonRect(button);
+            const accent = TOPIC_ACCENTS[index % TOPIC_ACCENTS.length];
+            const hover = button.aeroDisabled ? 0 : clamp(button.hoverValue, 0, 1);
+            const centerX = rect.x + rect.w / 2;
+            const centerY = rect.y + rect.h / 2;
+            const glowRadius = Math.max(rect.w, rect.h) * .55;
+            const chipH = Math.min(rect.h * .22, Math.max(24 * this.#uiScale(), rect.h * .13));
+            const chip = {
+                x: rect.x + rect.w * .14,
+                y: rect.y + rect.h - chipH - rect.h * .055,
+                w: rect.w * .72,
+                h: chipH
+            };
+
+            if (hover > 0) {
+                this.#drawContent({
+                    shape: 'circle',
+                    x: centerX,
+                    y: centerY,
+                    radius: glowRadius,
+                    fill: {
+                        type: 'radial',
+                        x0: centerX,
+                        y0: centerY,
+                        r0: 0,
+                        x1: centerX,
+                        y1: centerY,
+                        r1: glowRadius,
+                        stops: [
+                            { offset: 0, color: 'rgba(255,255,255,0.38)' },
+                            { offset: .42, color: accent },
+                            { offset: 1, color: 'rgba(255,255,255,0)' }
+                        ]
+                    },
+                    alpha: hover * .18
+                });
+                this.#drawContent({
+                    shape: 'roundRect',
+                    ...rect,
+                    radius: Math.min(rect.w, rect.h) * .12,
+                    fill: false,
+                    stroke: COLORS.GLASS_WHITE,
+                    lineWidth: 1 + hover,
+                    alpha: .26 + hover * .5,
+                    shadowBlur: 4 + hover * 10,
+                    shadowColor: accent
+                });
+            }
+
+            this.#drawContent({
+                shape: 'roundRect',
+                ...chip,
+                radius: chip.h / 2,
+                fill: 'rgba(8,48,74,0.68)',
+                stroke: 'rgba(245,254,255,0.72)',
+                lineWidth: 1,
+                alpha: .8 + hover * .16,
+                shadowBlur: 2 + hover * 8,
+                shadowColor: accent
+            });
+            this.#drawContent({
+                shape: 'roundRect',
+                x: chip.x + 1,
+                y: chip.y + 1,
+                w: Math.max(1, chip.w - 2),
+                h: Math.max(2, chip.h * .48),
+                radius: Math.max(2, chip.h / 2 - 1),
+                fill: {
+                    type: 'linear', x1: 0, y1: chip.y, x2: 0, y2: chip.y + chip.h * .48,
+                    stops: [
+                        { offset: 0, color: 'rgba(255,255,255,0.56)' },
+                        { offset: .36, color: 'rgba(255,255,255,0.17)' },
+                        { offset: 1, color: 'rgba(255,255,255,0)' }
+                    ]
+                },
+                alpha: .34 + hover * .2
+            });
+            this.#label(
+                `${index + 1}. ${topic.shortTitle || topic.title || `주제 ${index + 1}`}`,
+                chip.x + chip.w / 2,
+                chip.y + chip.h / 2,
+                Math.min(this.#size(UI.BODY_FONT_WH), chip.h * .48),
+                COLORS.GLASS_WHITE,
+                {
+                    align: 'center',
+                    baseline: 'middle',
+                    weight: 900,
+                    maxWidth: chip.w * .82,
+                    shadowBlur: hover * 4,
+                    shadowColor: accent
+                }
+            );
+        });
+    }
+
+    /** 주제 원화 로드 실패 시 기존 카드 선택 UI를 유지합니다. @private */
+    #topicCardsFallback() {
         const c = this.context;
         const center = c.UIOffsetX + c.UIWW / 2;
         this.#label('AERO LIVE', center, c.WH * .095, this.#size(UI.TITLE_FONT_WH), COLORS.INK, {
@@ -918,7 +1106,6 @@ export class AeroLiveRenderer {
             COLORS.INK,
             { align: 'center', weight: 850, maxWidth: c.UIWW * .72 }
         );
-
         c.topicButtons.forEach((button, index) => {
             const topic = c.topicSummaries[index] || {};
             const rect = this.#buttonRect(button);
@@ -963,7 +1150,6 @@ export class AeroLiveRenderer {
             this.#wrapped(topic.concept || '특별 방송', rect.x + rect.w * .08, rect.y + rect.h * .47, rect.w * .84, this.#size(UI.BODY_FONT_WH), COLORS.INK, 2, 'center');
             this.#label(`${topic.beatCount || '-'} BEATS · 약 ${Math.max(1, Math.round(number(topic.estimatedSeconds) / 60))}분`, rect.x + rect.w / 2, rect.y + rect.h * .84, this.#size(UI.SMALL_FONT_WH), COLORS.INK_MUTED, { align: 'center', weight: 750, maxWidth: rect.w * .85 });
         });
-
     }
 
     /** 메인·우상 채팅·우하 프로듀서 창으로 방송 화면을 그립니다. @private */
