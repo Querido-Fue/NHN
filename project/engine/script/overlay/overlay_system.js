@@ -6,18 +6,15 @@ import { OverlaySession } from './_overlay_session.js';
 import { ExitOverlay } from './_exit_overlay.js';
 import { ExternalLinkWarningOverlay } from './_external_link_warning_overlay.js';
 import { DiagnosticTestOverlay, DIAGNOSTIC_TEST_TYPES } from './_diagnostic_test_overlay.js';
-import { TitleSettingsOverlay } from './_title_settings_overlay.js';
 import { SceneSelectOverlay } from './_scene_select_overlay.js';
 
 const OVERLAY_MANAGER_KEYS = Object.freeze({
     EXIT_CONFIRM: 'exitConfirm',
     EXTERNAL_LINK_WARNING: 'externalLinkWarning',
     SCENE_SELECT: 'sceneSelect',
-    TITLE_SETTINGS: 'titleSettings',
     DIAGNOSTIC_FILE: 'diagnosticFile',
     DIAGNOSTIC_DISPLAY: 'diagnosticDisplay',
-    DIAGNOSTIC_INPUT: 'diagnosticInput',
-    DIAGNOSTIC_SOUND: 'diagnosticSound'
+    DIAGNOSTIC_INPUT: 'diagnosticInput'
 });
 
 /**
@@ -163,20 +160,6 @@ export class OverlayManager {
     }
 
     /**
-     * 타이틀 설정 overlay를 엽니다.
-     * @returns {string|null} 생성된 overlay id입니다.
-     */
-    openTitleSettingsOverlay() {
-        if (this.keyToIdMap.has(OVERLAY_MANAGER_KEYS.TITLE_SETTINGS)) {
-            return this.keyToIdMap.get(OVERLAY_MANAGER_KEYS.TITLE_SETTINGS);
-        }
-
-        return this.openOverlay(new TitleSettingsOverlay(this.systemHandler), {
-            key: OVERLAY_MANAGER_KEYS.TITLE_SETTINGS
-        });
-    }
-
-    /**
      * 타이틀 시작 이후 임시 씬 선택 overlay를 엽니다.
      * @returns {string|null} 생성된 overlay id입니다.
      */
@@ -192,14 +175,13 @@ export class OverlayManager {
 
     /**
      * 진단 테스트 overlay를 엽니다.
-     * @param {'display'|'input'|'sound'} testType - 열 테스트 타입입니다.
+     * @param {'display'|'input'} testType - 열 테스트 타입입니다.
      * @returns {string|null} 생성된 overlay id입니다.
      */
     openDiagnosticTestOverlay(testType) {
         const keyByType = {
             [DIAGNOSTIC_TEST_TYPES.DISPLAY]: OVERLAY_MANAGER_KEYS.DIAGNOSTIC_DISPLAY,
-            [DIAGNOSTIC_TEST_TYPES.INPUT]: OVERLAY_MANAGER_KEYS.DIAGNOSTIC_INPUT,
-            [DIAGNOSTIC_TEST_TYPES.SOUND]: OVERLAY_MANAGER_KEYS.DIAGNOSTIC_SOUND
+            [DIAGNOSTIC_TEST_TYPES.INPUT]: OVERLAY_MANAGER_KEYS.DIAGNOSTIC_INPUT
         };
         const overlayKey = keyByType[testType];
         if (!overlayKey) {

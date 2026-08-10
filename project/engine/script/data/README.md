@@ -19,7 +19,6 @@ const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');
 - `global/`: 전역 공통 상수
 - `theme/`: 테마 컬러 스킴 (`light_theme.js`, `dark_theme.js`) 및 레지스트리(`theme_registry.js`)
 - `overlay/`: 오버레이 공통 데이터(애니메이션 프리셋, 레이아웃 비율)
-- `sound/`: 사운드 경로 및 기본 볼륨/입력 이벤트 상수
 - `display/`: 렌더러(WebGL) 관련 고정 상수
 - `input/`: 마우스/키보드 입력 상태 상수
 - `simulation/`: 고정 스텝/명령 큐 런타임 기본값

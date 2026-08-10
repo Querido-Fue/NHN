@@ -7,7 +7,6 @@ export const APP_PAUSE_DATA = Object.freeze({
     }),
     INACTIVE_POLICY: Object.freeze({
         keepLoopRunning: false,
-        pauseBgm: true,
         resetInputOnEnter: true,
         setMouseInactiveOnEnter: true
     })

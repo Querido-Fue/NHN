@@ -68,15 +68,6 @@ const DIAGNOSTIC_BUTTONS = Object.freeze([
             scene.sceneSystem.systemHandler.overlayManager?.openDiagnosticTestOverlay?.(DIAGNOSTIC_TEST_TYPES.INPUT);
         }
     },
-    {
-        id: 'soundTest',
-        icon: 'confirm',
-        label: 'Sound Test Overlay',
-        description: 'sample playback / volume slider',
-        run(scene) {
-            scene.sceneSystem.systemHandler.overlayManager?.openDiagnosticTestOverlay?.(DIAGNOSTIC_TEST_TYPES.SOUND);
-        }
-    }
 ]);
 
 function clampNumber(value, min, max) {
@@ -97,7 +88,7 @@ function createResponsiveFont(spec, uiww) {
 
 /**
  * @class DiagnosticScene
- * @description 엔진 분리 작업 중 display/input/ui/overlay/save/sound 상태를 확인하는 진단 씬입니다.
+ * @description 엔진 분리 작업 중 display/input/ui/overlay/save 상태를 확인하는 진단 씬입니다.
  */
 export class DiagnosticScene extends BaseScene {
     /**
@@ -312,7 +303,7 @@ export class DiagnosticScene extends BaseScene {
             shape: 'text',
             x: textX,
             y: this.panelY + this.#uwh(17.7),
-            text: 'Checks: WebGL, UI elements, overlay, save, display, input, sound.',
+            text: 'Checks: WebGL, UI elements, overlay, save, display, input.',
             font: this.fonts.BODY,
             fill: ColorSchemes?.Overlay?.Text?.Sub || 'rgba(255,255,255,0.62)',
             baseline: 'middle'

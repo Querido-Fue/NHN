@@ -13,25 +13,16 @@ import {
     getSetting,
     setSettingBatch
 } from 'runtime/runtime_settings.js';
-import {
-    getDiagnosticSampleState,
-    pauseDiagnosticSample,
-    playDiagnosticSample,
-    setDiagnosticSampleVolume,
-    stopDiagnosticSample
-} from 'sound/sound_system.js';
 import { createFontString } from 'util/font_util.js';
 
 export const DIAGNOSTIC_TEST_TYPES = Object.freeze({
     DISPLAY: 'display',
-    INPUT: 'input',
-    SOUND: 'sound'
+    INPUT: 'input'
 });
 
 const DIAGNOSTIC_TEST_COPY = Object.freeze({
     [DIAGNOSTIC_TEST_TYPES.DISPLAY]: 'Inspect the browser viewport and adjust the in-session render scale.',
-    [DIAGNOSTIC_TEST_TYPES.INPUT]: 'Press keys or mouse buttons to watch the raw input state update.',
-    [DIAGNOSTIC_TEST_TYPES.SOUND]: 'Play the sample asset and adjust its diagnostic playback volume.'
+    [DIAGNOSTIC_TEST_TYPES.INPUT]: 'Press keys or mouse buttons to watch the raw input state update.'
 });
 
 const DIAGNOSTIC_FONT_SPECS = Object.freeze({
@@ -46,8 +37,7 @@ const DIAGNOSTIC_FONT_SPECS = Object.freeze({
 
 const DIAGNOSTIC_SIZE = Object.freeze({
     [DIAGNOSTIC_TEST_TYPES.DISPLAY]: { widthRatio: 0.62, heightRatio: 0.54 },
-    [DIAGNOSTIC_TEST_TYPES.INPUT]: { widthRatio: 0.88, heightRatio: 0.76 },
-    [DIAGNOSTIC_TEST_TYPES.SOUND]: { widthRatio: 0.58, heightRatio: 0.50 }
+    [DIAGNOSTIC_TEST_TYPES.INPUT]: { widthRatio: 0.88, heightRatio: 0.76 }
 });
 
 const KEYBOARD_MAIN_LAYOUT = Object.freeze([
@@ -260,11 +250,11 @@ function isMouseButtonActive(buttonName) {
 
 /**
  * @class DiagnosticTestOverlay
- * @description 엔진 진단용 디스플레이/입력/사운드 테스트 overlay입니다.
+ * @description 엔진 진단용 디스플레이/입력 테스트 overlay입니다.
  */
 export class DiagnosticTestOverlay extends BaseOverlay {
     /**
-     * @param {'display'|'input'|'sound'} testType - 테스트 타입입니다.
+     * @param {'display'|'input'} testType - 테스트 타입입니다.
      * @param {object} systemHandler - 런타임 설정 반영에 사용할 SystemHandler입니다.
      */
     constructor(testType, systemHandler) {
@@ -281,8 +271,6 @@ export class DiagnosticTestOverlay extends BaseOverlay {
             : DIAGNOSTIC_TEST_TYPES.DISPLAY;
         this.systemHandler = systemHandler || null;
         this.displayTestStatus = 'Ready';
-        this.soundStatus = 'Ready';
-        this.soundVolume = 80;
         this.components = {};
         this.fonts = {};
     }
@@ -339,26 +327,6 @@ export class DiagnosticTestOverlay extends BaseOverlay {
             .text(this.#getDescription())
             .fill(ColorSchemes.Overlay.Text.Item);
 
-        if (this.testType === DIAGNOSTIC_TEST_TYPES.SOUND) {
-            handler.space('WH', 2.2)
-                .group('diagnostic-sound-volume')
-                .justifyContent('left', 'WW', 1.1)
-                .item('text')
-                .stylePreset('h4_bold')
-                .text('Volume')
-                .width('WW', 6)
-                .fill(ColorSchemes.Overlay.Text.Item)
-                .item('slider', 'soundVolume')
-                .width('WW', 22)
-                .height('WH', 3.1)
-                .valueRange(0, 100)
-                .setValue(this.soundVolume)
-                .prop('step', 1)
-                .prop('valueFormatter', (value) => `${Math.round(value)}%`)
-                .onChange((value) => this.#setSoundVolume(value))
-                .endGroup();
-        }
-
         this.#buildBottomControls(handler);
 
         const buildResult = handler.build();
@@ -375,15 +343,12 @@ export class DiagnosticTestOverlay extends BaseOverlay {
             this.#drawDisplayTestContent();
         } else if (this.testType === DIAGNOSTIC_TEST_TYPES.INPUT) {
             this.#drawInputTestContent();
-        } else if (this.testType === DIAGNOSTIC_TEST_TYPES.SOUND) {
-            this.#drawSoundTestContent();
         }
     }
 
     #getTitle() {
         if (this.testType === DIAGNOSTIC_TEST_TYPES.DISPLAY) return 'Browser / Render Test';
         if (this.testType === DIAGNOSTIC_TEST_TYPES.INPUT) return 'Input Test';
-        if (this.testType === DIAGNOSTIC_TEST_TYPES.SOUND) return 'Sound Playback Test';
         return 'Diagnostic Test';
     }
 
@@ -414,25 +379,6 @@ export class DiagnosticTestOverlay extends BaseOverlay {
             return;
         }
 
-        if (this.testType === DIAGNOSTIC_TEST_TYPES.SOUND) {
-            handler.bottomSpace('WH', 2.1)
-                .bottomGroup('sound-actions').justifyContent('right', 'WW', 1).align('right')
-                .item('button').stylePreset('overlay_interact_button').width('content').buttonText('Play').buttonColor(ColorSchemes.Overlay.Button.Confirm).icon('confirm').onClick(() => {
-                    void this.#playSampleSound();
-                })
-                .item('button').stylePreset('overlay_interact_button').width('content').buttonText('Pause').buttonColor(ColorSchemes.Overlay.Button.Confirm).icon('check').onClick(() => {
-                    pauseDiagnosticSample();
-                    this.soundStatus = 'Paused';
-                })
-                .item('button').stylePreset('overlay_interact_button').width('content').buttonText('Stop').buttonColor(ColorSchemes.Overlay.Button.Cancel).icon('deny').onClick(() => {
-                    stopDiagnosticSample();
-                    this.soundStatus = 'Stopped';
-                })
-                .item('button').stylePreset('overlay_interact_button').width('content').buttonText('Close').buttonColor(ColorSchemes.Overlay.Button.Cancel).icon('deny').onClick(this.close.bind(this))
-                .endGroup();
-            return;
-        }
-
         handler.bottomSpace('WH', 2.1)
             .bottomGroup('input-actions').justifyContent('right', 'WW', 1).align('right')
             .item('button').stylePreset('overlay_interact_button').width('content').buttonText('Close').buttonColor(ColorSchemes.Overlay.Button.Cancel).icon('deny').onClick(this.close.bind(this))
@@ -444,7 +390,7 @@ export class DiagnosticTestOverlay extends BaseOverlay {
         const insetX = Math.max(this.#uww(1.5), panel.w * 0.055);
         const topOffset = this.testType === DIAGNOSTIC_TEST_TYPES.INPUT
             ? this.#uwh(9.2)
-            : (this.testType === DIAGNOSTIC_TEST_TYPES.SOUND ? this.#uwh(17.2) : this.#uwh(13.8));
+            : this.#uwh(13.8);
         const bottomReserve = this.testType === DIAGNOSTIC_TEST_TYPES.DISPLAY
             ? this.#uwh(14.8)
             : this.#uwh(11.2);
@@ -521,45 +467,6 @@ export class DiagnosticTestOverlay extends BaseOverlay {
         }
 
         this.#drawMouseInputPanel(rect, rect.y + ((KEYBOARD_MAIN_LAYOUT.length + 0.7) * (keyH + rowGap)));
-    }
-
-    #drawSoundTestContent() {
-        const rect = this.#getContentRect();
-        const state = getDiagnosticSampleState?.() || {};
-        const duration = Number.isFinite(state.duration) && state.duration > 0 ? state.duration : 0;
-        const currentTime = Number.isFinite(state.currentTime) ? state.currentTime : 0;
-        const progress = duration > 0 ? Math.min(1, currentTime / duration) : 0;
-        const labelW = this.#uww(6.8);
-
-        this.#drawSectionLabel(rect.x, rect.y, 'PLAYBACK');
-        this.#drawInfoLine(rect.x, rect.y + this.#uwh(3.4), 'Sample', state.path || '../asset/audio/기다려줘.mp3', labelW, rect.w - labelW);
-        this.#drawInfoLine(rect.x, rect.y + this.#uwh(6.5), 'State', state.paused ? 'paused' : 'playing', labelW, rect.w - labelW);
-        this.#drawInfoLine(rect.x, rect.y + this.#uwh(9.6), 'Status', this.soundStatus, labelW, rect.w - labelW);
-        this.#drawInfoLine(rect.x, rect.y + this.#uwh(12.7), 'Time', `${currentTime.toFixed(2)} / ${duration.toFixed(2)} sec`, labelW, rect.w - labelW);
-        this.#drawDivider(rect.x, rect.y + this.#uwh(15.8), rect.w);
-        this.#drawProgressLine(rect.x, rect.y + this.#uwh(18.6), rect.w, progress);
-    }
-
-    #drawProgressLine(x, y, width, progress) {
-        const height = this.#uwh(0.45);
-        render(this.layer, {
-            shape: 'roundRect',
-            x,
-            y,
-            w: width,
-            h: height,
-            radius: height * 0.5,
-            fill: 'rgba(255,255,255,0.12)'
-        });
-        render(this.layer, {
-            shape: 'roundRect',
-            x,
-            y,
-            w: width * progress,
-            h: height,
-            radius: height * 0.5,
-            fill: ColorSchemes.Overlay.Control.Accent || '#82d7ff'
-        });
     }
 
     #drawKeyboardRow(row, x, y, unit, keyH, gap) {
@@ -734,29 +641,4 @@ export class DiagnosticTestOverlay extends BaseOverlay {
         }
     }
 
-    #setSoundVolume(value) {
-        this.soundVolume = Math.round(Number(value) || 0);
-        setDiagnosticSampleVolume(this.soundVolume);
-        this.soundStatus = `Volume ${this.soundVolume}%`;
-    }
-
-    async #playSampleSound() {
-        this.soundStatus = 'Playing...';
-        try {
-            await playDiagnosticSample({ volume: this.soundVolume, restart: true });
-            this.soundStatus = 'Playing';
-        } catch (error) {
-            console.error(error);
-            this.soundStatus = error?.message || String(error);
-        }
-    }
-
-    /**
-     * @override
-     */
-    onCloseComplete() {
-        if (this.testType === DIAGNOSTIC_TEST_TYPES.SOUND) {
-            stopDiagnosticSample();
-        }
-    }
 }

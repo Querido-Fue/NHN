@@ -6,7 +6,6 @@ import { SceneSystem } from 'scene/scene_system.js';
 import { UISystem } from 'ui/ui_system.js';
 import { OverlayManager } from 'overlay/overlay_system.js';
 import { DebugSystem, measurePerformanceSection } from 'debug/debug_system.js';
-import { SoundSystem } from 'sound/sound_system.js';
 import { getTimeHandler } from 'engine/time_handler.js';
 import { warmupUIPools } from 'ui/_ui_pool.js';
 import { getData } from 'data/data_handler.js';
@@ -56,44 +55,39 @@ export class SystemHandler {
         await this.settingsSystem.init();
         this.logDebugInfo("RuntimeSettings 초기화");
 
-        // 2. SoundSystem (사운드 초기화 - 설정 의존)
-        this.soundSystem = new SoundSystem();
-        await this.soundSystem.init();
-        this.logDebugInfo("SoundSystem 로드");
-
-        // 3. DisplaySystem (화면/WebGL 초기화 - 설정 의존)
+        // 2. DisplaySystem (화면/WebGL 초기화 - 설정 의존)
         this.displaySystem = new DisplaySystem();
         await this.displaySystem.init();
         this.logDebugInfo("DisplaySystem 로드");
 
-        // 4. AnimationSystem (애니메이션 초기화)
+        // 3. AnimationSystem (애니메이션 초기화)
         this.animationSystem = new AnimationSystem();
         await this.animationSystem.init();
         this.logDebugInfo("AnimationSystem 로드");
 
-        // 5. InputSystem (입력 초기화)
+        // 4. InputSystem (입력 초기화)
         this.inputSystem = new InputSystem();
         await this.inputSystem.init();
         this.logDebugInfo("InputSystem 로드");
         this.#syncSimulationRuntime();
 
-        // 6. UISystem (UI 초기화)
+        // 5. UISystem (UI 초기화)
         this.uiSystem = new UISystem();
         await this.uiSystem.init();
         this.logDebugInfo("UISystem 로드");
 
-        // 7. 선택 ObjectSystem (엔진 testbed 또는 외부 런타임 확장)
+        // 6. 선택 ObjectSystem (엔진 testbed 또는 외부 런타임 확장)
         this.objectSystem = await this.#initOptionalSystem("ObjectSystem", this.objectSystemFactory);
 
-        // 8. SceneSystem (씬 초기화)
+        // 7. SceneSystem (씬 초기화)
         this.sceneSystem = new SceneSystem(this, this.options.sceneSystem || {});
         await this.sceneSystem.init();
         this.logDebugInfo("SceneSystem 로드");
 
-        // 9. 선택 RuntimeManager
+        // 8. 선택 RuntimeManager
         this.runtimeManager = await this.#initOptionalSystem("RuntimeManager", this.runtimeManagerFactory);
 
-        // 10. OverlayManager (오버레이 초기화)
+        // 9. OverlayManager (오버레이 초기화)
         this.overlayManager = new OverlayManager({
             ...(this.options.overlayManager || {}),
             systemHandler: this
@@ -101,12 +95,12 @@ export class SystemHandler {
         await this.overlayManager.init();
         this.logDebugInfo("OverlayManager 로드");
 
-        // 11. DebugSystem (디버그 초기화)
+        // 10. DebugSystem (디버그 초기화)
         this.debugSystem = new DebugSystem();
         await this.debugSystem.init();
         this.logDebugInfo("DebugSystem 로드");
 
-        // 12. 풀 워밍업
+        // 11. 풀 워밍업
         await this.animationSystem.warmup();
         warmupUIPools();
         this.displaySystem.warmupCanvasPools(
@@ -167,7 +161,6 @@ export class SystemHandler {
             }
         });
 
-        policy.pauseBgm = overrides.pauseBgm === true;
         policy.resetInputOnEnter = overrides.resetInputOnEnter === true;
         policy.setMouseInactiveOnEnter = overrides.setMouseInactiveOnEnter === true;
         return policy;
@@ -201,7 +194,6 @@ export class SystemHandler {
         }
 
         this.frameExecutionPolicy = this.#buildFrameExecutionPolicy();
-        this.#applyPauseSideEffects();
         return hadReason !== isActive;
     }
 
@@ -364,12 +356,6 @@ export class SystemHandler {
             this.uiSystem.setLanguage(changedSettings.language);
         }
 
-        if (changedSettings.bgmVolume !== undefined
-            && this.soundSystem
-            && typeof this.soundSystem.setBgmVolume === 'function') {
-            this.soundSystem.setBgmVolume(changedSettings.bgmVolume);
-        }
-
         if (this.overlayManager && typeof this.overlayManager.applyRuntimeSettings === 'function') {
             this.overlayManager.applyRuntimeSettings(changedSettings);
         }
@@ -395,11 +381,6 @@ export class SystemHandler {
         if (executionPolicy.runFrameTimeUpdate && timeHandler && typeof timeHandler.update === 'function') {
             measurePerformanceSection('frame.update.time', () => {
                 timeHandler.update(frameDeltaSeconds);
-            });
-        }
-        if (executionPolicy.runSoundUpdate) {
-            measurePerformanceSection('frame.update.sound', () => {
-                this.soundSystem.update();
             });
         }
         if (executionPolicy.runAnimationUpdate) {
@@ -528,11 +509,6 @@ export class SystemHandler {
                 this.debugSystem.draw();
             });
         }
-        if (executionPolicy.renderSound) {
-            measurePerformanceSection('frame.draw.sound', () => {
-                this.soundSystem.draw();
-            });
-        }
         measurePerformanceSection('frame.draw.sceneTransition', () => {
             this.sceneSystem.drawTransitionOverlay();
         });
@@ -553,38 +529,12 @@ export class SystemHandler {
                 }
             });
 
-            if (policy.pauseBgm === true) {
-                mergedPolicy.pauseBgm = true;
-            }
             if (policy.setMouseInactiveOnEnter === true) {
                 mergedPolicy.setMouseInactiveOnEnter = true;
             }
         }
 
         return mergedPolicy;
-    }
-
-    /**
-     * @private
-     * 일시정지 정책에 따라 입력 초기화와 BGM 정지/재개를 반영합니다.
-     */
-    #applyPauseSideEffects() {
-        if (!this.soundSystem) {
-            return;
-        }
-
-        const shouldPauseBgm = this.frameExecutionPolicy.pauseBgm === true;
-        if (typeof this.soundSystem.setRuntimeSuspended === 'function') {
-            this.soundSystem.setRuntimeSuspended(shouldPauseBgm);
-            return;
-        }
-
-        if (shouldPauseBgm) {
-            this.soundSystem.pauseBgm();
-            return;
-        }
-
-        void this.soundSystem.playBgm();
     }
 
     /**

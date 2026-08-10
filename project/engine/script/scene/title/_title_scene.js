@@ -205,10 +205,6 @@ export class TitleScene extends BaseScene {
      * @private
      */
     #runButtonAction(buttonId) {
-        if (buttonId === 'settings') {
-            this.sceneSystem.systemHandler.overlayManager?.openTitleSettingsOverlay?.();
-            return;
-        }
         if (buttonId === 'exitGame') {
             this.sceneSystem.systemHandler.overlayManager?.openExitOverlay?.();
         }

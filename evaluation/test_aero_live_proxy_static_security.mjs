@@ -9,6 +9,11 @@ const FORBIDDEN_DEPLOYED_STRINGS = [
     'generativelanguage.googleapis.com',
     'PUT_YOUR_GEMINI_API_KEY_HERE'
 ];
+const FORBIDDEN_AUDIO_REQUEST_STRINGS = [
+    'new Audio(',
+    '.mp3',
+    '"sound/": "./script/sound/"'
+];
 const SOURCE_EXTENSIONS = new Set(['.js', '.mjs', '.html', '.json']);
 
 function collectFiles(directory) {
@@ -32,6 +37,11 @@ for (const filePath of collectFiles(ENGINE_ROOT)) {
             violations.push(`${path.relative(ENGINE_ROOT, filePath)}: ${forbidden}`);
         }
     }
+    for (const forbidden of FORBIDDEN_AUDIO_REQUEST_STRINGS) {
+        if (source.includes(forbidden)) {
+            violations.push(`${path.relative(ENGINE_ROOT, filePath)}: ${forbidden}`);
+        }
+    }
 }
 
 assert.deepEqual(
@@ -40,4 +50,4 @@ assert.deepEqual(
     `배포 engine 소스에서 금지된 직접 Gemini/키 문자열이 발견되었습니다:\n${violations.join('\n')}`
 );
 
-console.log('AERO LIVE Pages engine static security scan passed');
+console.log('I Can Fix Her! Pages engine static security scan passed');

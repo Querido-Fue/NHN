@@ -17,7 +17,6 @@ import { CURSOR_CONSTANTS } from 'data/ui/cursor/cursor_constants.js';
 import { TOOLTIP_CONSTANTS } from 'data/ui/tooltip/tooltip_constants.js';
 import { SIMULATION_RUNTIME_DEFAULTS } from 'data/simulation/simulation_runtime_defaults.js';
 import { DEBUG_CONSTANTS } from 'data/debug/debug_constants.js';
-import { SOUND_CONSTANTS } from 'data/sound/sound_constants.js';
 import { SCENE_TRANSITION_CONSTANTS } from 'data/scene/scene_transition_constants.js';
 import { TITLE_SCENE_CONSTANTS } from 'data/scene/title/title_scene_constants.js';
 import { GAME_SCENE_CONSTANTS } from 'data/scene/game/game_scene_constants.js';
@@ -54,7 +53,6 @@ const DATA_REGISTRY = Object.freeze({
     TOOLTIP_CONSTANTS,
     SIMULATION_RUNTIME_DEFAULTS,
     DEBUG_CONSTANTS,
-    SOUND_CONSTANTS,
     SCENE_TRANSITION_CONSTANTS,
     TITLE_SCENE_CONSTANTS,
     GAME_SCENE_CONSTANTS,

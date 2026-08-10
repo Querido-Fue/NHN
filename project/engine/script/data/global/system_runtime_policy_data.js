@@ -10,7 +10,6 @@ export const SYSTEM_RUNTIME_POLICY_DATA = Object.freeze({
         keepLoopRunning: true,
         runFrameTimeUpdate: true,
         runFixedStep: true,
-        runSoundUpdate: true,
         runAnimationUpdate: true,
         runInputUpdate: true,
         runUiUpdate: true,
@@ -25,8 +24,6 @@ export const SYSTEM_RUNTIME_POLICY_DATA = Object.freeze({
         renderUi: true,
         renderOverlay: true,
         renderDebug: true,
-        renderSound: true,
-        pauseBgm: false,
         resetInputOnEnter: false,
         setMouseInactiveOnEnter: false
     }),
@@ -34,7 +31,6 @@ export const SYSTEM_RUNTIME_POLICY_DATA = Object.freeze({
         'keepLoopRunning',
         'runFrameTimeUpdate',
         'runFixedStep',
-        'runSoundUpdate',
         'runAnimationUpdate',
         'runInputUpdate',
         'runUiUpdate',
@@ -48,7 +44,6 @@ export const SYSTEM_RUNTIME_POLICY_DATA = Object.freeze({
         'renderScene',
         'renderUi',
         'renderOverlay',
-        'renderDebug',
-        'renderSound'
+        'renderDebug'
     ])
 });

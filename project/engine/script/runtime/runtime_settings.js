@@ -30,8 +30,6 @@ export class RuntimeSettings {
             renderScale: { type: 'int', value: 100, min: 75, max: 100 },
             uiScale: { type: 'int', value: 100, min: 75, max: 150 },
             tooltipDelaySeconds: { type: 'float', value: 0.7, min: 0, max: 2 },
-            bgmVolume: { type: 'int', value: 100, min: 0, max: 100 },
-            sfxVolume: { type: 'int', value: 100, min: 0, max: 100 },
             debugMode: { type: 'bool', value: false, min: -1, max: -1 }
         };
     }
