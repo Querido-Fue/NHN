@@ -1,11 +1,11 @@
 {
-    "name": "aero_live_prototype",
+    "name": "i_can_fix_her",
     "version": "0.4",
     "main": "engine/index.html",
     "nodejs": true,
     "js-flags": "",
     "window": {
-        "title": "AERO LIVE Prototype",
+        "title": "I Can Fix Her!",
         "toolbar": false,
         "fullscreen": false,
         "position": "center",

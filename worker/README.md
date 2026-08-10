@@ -1,4 +1,4 @@
-# AERO LIVE Gemini Worker
+# I Can Fix Her! Gemini Worker
 
 `nhn-aero-live-api` is the only component that calls Gemini. The GitHub Pages game sends a small, validated game context to `POST /v1/aero-live`; this Worker builds the Gemini request and returns only contract-validated JSON.
 
