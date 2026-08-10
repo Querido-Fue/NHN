@@ -643,7 +643,7 @@ function validateChat(chat, viewerIdSet, maxTextChars, label) {
 }
 
 /**
- * AERO LIVE Gemini 구조화 출력 계약을 조립하고 검증합니다.
+ * I Can Fix Her! Gemini 구조화 출력 계약을 조립하고 검증합니다.
  */
 export class AeroLiveLlmContract {
     /**
@@ -1015,7 +1015,7 @@ export class AeroLiveLlmContract {
      */
     #buildChatSystemPrompt(batchSize) {
         return [
-            '당신은 가상의 버츄얼 방송 관리 게임 AERO LIVE의 일반 시청자 채팅 작성기다.',
+            '당신은 가상의 버츄얼 방송 관리 게임 I Can Fix Her!의 일반 시청자 채팅 작성기다.',
             `현재 장면에 자연스럽게 이어지는 짧은 한국어 채팅을 정확히 ${batchSize}개 작성한다.`,
             '게임 규칙, 수치, 핵심 채팅, 후원 사건은 결정하지 않는다.',
             'chat_slots의 slot_id, viewer_id, sentiment, format, context_ref, anchor는 게임이 이미 결정했다. 모델은 이를 바꾸지 않고 각 slot_id의 text만 작성한다.',
@@ -1046,7 +1046,7 @@ export class AeroLiveLlmContract {
      */
     #buildIntentSystemPrompt() {
         return [
-            '당신은 가상의 버츄얼 방송 관리 게임 AERO LIVE의 플레이어 채팅 의도 분류기다.',
+            '당신은 가상의 버츄얼 방송 관리 게임 I Can Fix Her!의 플레이어 채팅 의도 분류기다.',
             'player_message를 praise, rebuttal, provocation, neutral, blocked 중 하나로 분류한다.',
             '칭찬과 응원은 praise, 부정적 주장 반박과 중재는 rebuttal, 논쟁·과격 반응 유도는 provocation이다.',
             '구체적 폭력 위협, 개인정보, 혐오, 노골적 성적 표현, 자해 협박, 범죄 유도는 blocked다.',

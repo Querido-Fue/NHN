@@ -134,7 +134,7 @@ function interpolateFocus(from, to, progress) {
 }
 
 /**
- * 첫 방송 시작 전 AERO LIVE 안내의 시각 타임라인과 단계 전환만 관리합니다.
+ * 첫 방송 시작 전 I Can Fix Her! 안내의 시각 타임라인과 단계 전환만 관리합니다.
  * 게임 Runtime을 변경하지 않으며 Scene이 이 객체의 활성 상태를 기준으로 Runtime을 잠급니다.
  */
 export class AeroLiveTutorial {

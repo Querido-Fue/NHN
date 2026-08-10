@@ -140,7 +140,7 @@ function delta(value) {
 }
 
 /**
- * AERO LIVE의 Canvas 표현과 텍스트 레이아웃을 전담합니다.
+ * I Can Fix Her!의 Canvas 표현과 텍스트 레이아웃을 전담합니다.
  */
 export class AeroLiveRenderer {
     /**
@@ -932,7 +932,7 @@ export class AeroLiveRenderer {
         const c = this.context;
         const rect = c.layout.nicknamePanel;
         const center = c.UIOffsetX + c.UIWW / 2;
-        this.#label('AERO LIVE', center, c.WH * .1, this.#size(UI.TITLE_FONT_WH), COLORS.INK, {
+        this.#label('I Can Fix Her!', center, c.WH * .1, this.#size(UI.TITLE_FONT_WH), COLORS.INK, {
             align: 'center',
             weight: 950,
             shadowBlur: 4,
@@ -992,7 +992,7 @@ export class AeroLiveRenderer {
 
         const headingX = c.UIOffsetX + Math.max(22 * this.#uiScale(), c.UIWW * .018);
         const headingWidth = Math.max(150, c.UIWW * .27);
-        this.#label('AERO LIVE', headingX, c.WH * .048, this.#size(UI.TITLE_FONT_WH) * .72, COLORS.INK, {
+        this.#label('I Can Fix Her!', headingX, c.WH * .048, this.#size(UI.TITLE_FONT_WH) * .72, COLORS.INK, {
             weight: 950,
             shadowBlur: 5,
             shadowColor: 'rgba(245,254,255,0.78)',
@@ -1113,7 +1113,7 @@ export class AeroLiveRenderer {
     #topicCardsFallback() {
         const c = this.context;
         const center = c.UIOffsetX + c.UIWW / 2;
-        this.#label('AERO LIVE', center, c.WH * .095, this.#size(UI.TITLE_FONT_WH), COLORS.INK, {
+        this.#label('I Can Fix Her!', center, c.WH * .095, this.#size(UI.TITLE_FONT_WH), COLORS.INK, {
             align: 'center', weight: 950, shadowBlur: 4, shadowColor: 'rgba(66,224,208,0.24)'
         });
         this.#label(
@@ -1221,7 +1221,7 @@ export class AeroLiveRenderer {
         this.#drawContent({ shape: 'roundRect', ...pill, radius: 999, fill: COLORS.LIVE });
         this.#label('● LIVE', pill.x + pill.w / 2, pill.y + pill.h / 2, this.#size(UI.SMALL_FONT_WH), COLORS.GLASS_WHITE, { align: 'center', baseline: 'middle', weight: 950 });
         const titleX = pill.x + pill.w + pad * .7;
-        this.#label(c.snapshot?.topic?.title || 'AERO LIVE', titleX, rect.y + rect.h * .34, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950, maxWidth: rect.w * .26 });
+        this.#label(c.snapshot?.topic?.title || 'I Can Fix Her!', titleX, rect.y + rect.h * .34, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { baseline: 'middle', weight: 950, maxWidth: rect.w * .26 });
         this.#label(clock(c.snapshot?.elapsedSeconds), titleX, rect.y + rect.h * .68, this.#size(UI.SMALL_FONT_WH), TOP_BAR_TIMER_COLOR, { baseline: 'middle', weight: 700 });
         if (this.#usesLiveWindowLayout()) {
             this.#macWindowControls(c.layout.mainWindowControls, c.endButton);
@@ -2076,7 +2076,7 @@ export class AeroLiveRenderer {
         const endColor = endType === 'emergency' ? COLORS.NEGATIVE : endType === 'early' ? COLORS.WARNING : COLORS.POSITIVE;
         const center = c.UIOffsetX + c.UIWW / 2;
         this.#label(endLabels[endType] || '방송 종료', center, c.WH * .085, this.#size(UI.TITLE_FONT_WH), endColor, { align: 'center', weight: 950 });
-        this.#label(`${text(c.snapshot?.topic?.title || result.topic?.title || 'AERO LIVE', 50)} · ${clock(result.durationSeconds ?? c.snapshot?.elapsedSeconds)}`, center, c.WH * .145, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { align: 'center', weight: 850 });
+        this.#label(`${text(c.snapshot?.topic?.title || result.topic?.title || 'I Can Fix Her!', 50)} · ${clock(result.durationSeconds ?? c.snapshot?.elapsedSeconds)}`, center, c.WH * .145, this.#size(UI.SUBTITLE_FONT_WH), COLORS.INK, { align: 'center', weight: 850 });
 
         const outer = { x: c.UIOffsetX + c.UIWW * .065, y: c.WH * .19, w: c.UIWW * .87, h: c.WH * .58 };
         const left = { x: outer.x, y: outer.y, w: outer.w * .39, h: outer.h };

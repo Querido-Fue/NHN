@@ -12,7 +12,7 @@ const SAFE_PROXY_ERROR_CODES = new Set([
 ]);
 
 /**
- * AERO LIVE의 일반 채팅 생성과 플레이어 입력 분류를 서버 프록시에 연결합니다.
+ * I Can Fix Her!의 일반 채팅 생성과 플레이어 입력 분류를 서버 프록시에 연결합니다.
  * 일반 채팅 실패는 빈 배치로 폴백하고, 플레이어 입력 판정 실패는 전송을 보류합니다.
  */
 export class AeroLiveAiService {

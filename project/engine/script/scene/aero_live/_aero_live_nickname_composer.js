@@ -140,7 +140,7 @@ export class AeroLiveNicknameComposer {
 
         this.form = document.createElement('form');
         this.form.className = 'aero-live-nickname-composer';
-        this.form.setAttribute('aria-label', 'AERO LIVE 플레이어 닉네임 설정');
+        this.form.setAttribute('aria-label', 'I Can Fix Her! 플레이어 닉네임 설정');
         Object.assign(this.form.style, {
             position: 'absolute',
             zIndex: '3',

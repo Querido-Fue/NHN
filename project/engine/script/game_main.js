@@ -11,7 +11,7 @@ let GameApp;
 
 /**
  * 게임 런타임 진입점입니다.
- * 엔진 시스템을 초기화한 뒤 AERO LIVE 주제 선택 화면을 띄웁니다.
+ * 엔진 시스템을 초기화한 뒤 I Can Fix Her! 주제 선택 화면을 띄웁니다.
  */
 export async function initializeGameRuntime() {
     try {

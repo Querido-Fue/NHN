@@ -20,7 +20,7 @@ export const GAME_SCENE_CONSTANTS = Object.freeze({
         OPTIONS: Object.freeze([
             Object.freeze({
                 id: 'aeroLive',
-                label: 'AERO LIVE 프로토타입',
+                label: 'I Can Fix Her!',
                 sceneId: 'aeroLive'
             })
         ])

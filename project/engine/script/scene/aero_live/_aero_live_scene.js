@@ -203,7 +203,7 @@ function createPrivateViewerIds(playerName, count = 3) {
 }
 
 /**
- * AERO LIVE의 주제 선택, 방송, 결과 화면을 하나의 수명주기에서 관리합니다.
+ * I Can Fix Her!의 주제 선택, 방송, 결과 화면을 하나의 수명주기에서 관리합니다.
  */
 export class AeroLiveScene extends BaseScene {
     /**

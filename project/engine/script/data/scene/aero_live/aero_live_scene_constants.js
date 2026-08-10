@@ -1,5 +1,5 @@
 /**
- * AERO LIVE 프로토타입에서 사용하는 렌더, 입력, AI 연결 상수입니다.
+ * I Can Fix Her! 프로토타입에서 사용하는 렌더, 입력, AI 연결 상수입니다.
  */
 export const AERO_LIVE_SCENE_CONSTANTS = Object.freeze({
     ASSET: Object.freeze({

@@ -99,7 +99,7 @@ function readPositiveNumber(value, fallback) {
 }
 
 /**
- * AERO LIVE 한 회차의 순수 도메인 상태와 결정론적 타이머를 관리합니다.
+ * I Can Fix Her! 한 회차의 순수 도메인 상태와 결정론적 타이머를 관리합니다.
  *
  * 이 클래스는 DOM, Canvas, 파일, 네트워크를 사용하지 않습니다. 씬은
  * `beat-started` 이벤트를 AI 채팅 프롬프트로 사용하고 생성 결과만
@@ -178,7 +178,7 @@ export class AeroLiveRuntime {
 
         const topic = getAeroLiveTopicById(String(topicId || ''), this.#topics);
         if (!topic) {
-            throw new RangeError(`알 수 없는 AERO LIVE 주제입니다: ${topicId}`);
+            throw new RangeError(`알 수 없는 I Can Fix Her! 주제입니다: ${topicId}`);
         }
 
         this.#broadcastSequence += 1;
@@ -217,7 +217,7 @@ export class AeroLiveRuntime {
         while (remaining > EPSILON && this.#state.status === 'live') {
             transitionCount += 1;
             if (transitionCount > 1000) {
-                throw new Error('AERO LIVE 고정 스텝 전이 상한을 초과했습니다.');
+                throw new Error('I Can Fix Her! 고정 스텝 전이 상한을 초과했습니다.');
             }
 
             const activePrompt = this.#state.activeCoreChat || this.#state.activeDonation;
@@ -514,13 +514,13 @@ export class AeroLiveRuntime {
      */
     #validateTopics(topics) {
         if (!Array.isArray(topics) || topics.length === 0) {
-            throw new TypeError('AERO LIVE 주제 목록은 비어 있지 않은 배열이어야 합니다.');
+            throw new TypeError('I Can Fix Her! 주제 목록은 비어 있지 않은 배열이어야 합니다.');
         }
 
         const topicIds = new Set();
         topics.forEach((topic) => {
             if (!topic?.id || topicIds.has(topic.id)) {
-                throw new TypeError('AERO LIVE 주제 식별자는 비어 있지 않고 서로 달라야 합니다.');
+                throw new TypeError('I Can Fix Her! 주제 식별자는 비어 있지 않고 서로 달라야 합니다.');
             }
             topicIds.add(topic.id);
             if (!Array.isArray(topic.beats) || topic.beats.length < 4 || topic.beats.length > 5) {

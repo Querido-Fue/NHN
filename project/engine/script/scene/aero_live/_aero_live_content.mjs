@@ -218,7 +218,7 @@ export const AERO_LIVE_AMBIENT_CONTEXTUAL_MEMES = freezeDeep({
 });
 
 /**
- * AERO LIVE 세로 슬라이스에서 사용하는 다섯 주제와 비트 콘텐츠입니다.
+ * I Can Fix Her! 세로 슬라이스에서 사용하는 다섯 주제와 비트 콘텐츠입니다.
  * 각 주제는 읽기와 대응에 여유가 있는 약 3분의 5개 비트로 구성했습니다.
  */
 const AERO_LIVE_TOPIC_DEFINITIONS = [

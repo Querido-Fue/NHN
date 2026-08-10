@@ -7,7 +7,7 @@ const COLORS = AERO_CONSTANTS.COLORS;
 const FONT_FAMILY = 'Pretendard Variable, arial';
 
 /**
- * AERO LIVE 자유 채팅 form의 생성, Canvas 정렬과 정리를 전담합니다.
+ * I Can Fix Her! 자유 채팅 form의 생성, Canvas 정렬과 정리를 전담합니다.
  */
 export class AeroLiveDomComposer {
     /**
@@ -176,7 +176,7 @@ export class AeroLiveDomComposer {
             : document.body;
         this.form = document.createElement('form');
         this.form.className = 'aero-live-composer';
-        this.form.setAttribute('aria-label', 'AERO LIVE 자유 채팅 입력');
+        this.form.setAttribute('aria-label', 'I Can Fix Her! 자유 채팅 입력');
         Object.assign(this.form.style, {
             position: 'absolute',
             zIndex: '2',

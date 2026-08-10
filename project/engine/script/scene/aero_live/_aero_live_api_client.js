@@ -28,7 +28,7 @@ function byteLength(value) {
 }
 
 /**
- * AERO LIVE Worker의 공개 HTTP 계약만 담당합니다. Gemini 또는 API key 관련
+ * I Can Fix Her! Worker의 공개 HTTP 계약만 담당합니다. Gemini 또는 API key 관련
  * 정보를 알지 못하며, 네트워크 원문을 console에 기록하지 않습니다.
  */
 export class AeroLiveApiClient {
