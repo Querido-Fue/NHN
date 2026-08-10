@@ -143,10 +143,7 @@ export const AERO_LIVE_SCENE_CONSTANTS = Object.freeze({
         DARK_GLASS_SOFT: 'rgba(8,48,74,0.46)'
     }),
     AI: Object.freeze({
-        ENABLED: false,
-        CHAT_API_MODEL: 'gemini-3.6-flash',
-        INTENT_API_MODEL: 'gemini-3.5-flash-lite',
-        API_MODEL: 'gemini-3.5-flash-lite',
+        ENABLED: true,
         PROMPT_REVISION: 'aero-live-chat-v6',
         SCHEMA_VERSION: 'aero-live-ai-v1',
         REQUEST_TIMEOUT_MS: 8000,

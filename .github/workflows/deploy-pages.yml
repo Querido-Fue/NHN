@@ -30,6 +30,10 @@ jobs:
           cp -R project/engine project/asset project/license dist/
           cp project/index.html dist/
           touch dist/.nojekyll
+          if find dist -type f -name 'api_key.txt' -print -quit | grep -q .; then
+            echo 'Refusing to deploy an api_key.txt file to GitHub Pages.' >&2
+            exit 1
+          fi
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

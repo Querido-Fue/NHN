@@ -2,20 +2,29 @@ import { getData } from 'data/data_handler.js';
 import { AeroLiveLlmContract } from './_aero_live_llm_contract.mjs';
 
 const AI_CONSTANTS = getData('AERO_LIVE_SCENE_CONSTANTS').AI;
-const MAX_RESPONSE_BYTES = 256 * 1024;
-const ACCEPTED_FINISH_REASONS = new Set(['STOP', 'FINISH_REASON_UNSPECIFIED', '']);
+const AERO_LIVE_PROXY_URL = 'https://api.jukchang.com/v1/aero-live';
+const AERO_LIVE_PROXY_VERSION = 'aero-live-proxy-v1';
+const MAX_PROXY_RESPONSE_BYTES = 96 * 1024;
+const SAFE_PROXY_ERROR_CODES = new Set([
+    'INVALID_ORIGIN', 'INVALID_METHOD', 'INVALID_CONTENT_TYPE', 'INVALID_JSON',
+    'INVALID_VERSION', 'INVALID_LANE', 'INVALID_REQUEST_ID', 'INVALID_SESSION',
+    'INVALID_CONTEXT', 'REQUEST_TOO_LARGE', 'RATE_LIMITED', 'UPSTREAM_TIMEOUT',
+    'UPSTREAM_UNAVAILABLE', 'UPSTREAM_REJECTED', 'PROVIDER_SAFETY_BLOCK',
+    'INVALID_PROVIDER_RESPONSE', 'INTERNAL_ERROR'
+]);
 
 /**
- * AERO LIVE의 일반 채팅 생성과 플레이어 입력 분류를 Gemini REST API에 연결합니다.
+ * AERO LIVE의 일반 채팅 생성과 플레이어 입력 분류를 서버 프록시에 연결합니다.
  * 일반 채팅 실패는 빈 배치로 폴백하고, 플레이어 입력 판정 실패는 전송을 보류합니다.
  */
 export class AeroLiveAiService {
     /**
-     * @param {{rules?:object, fetchImpl?:Function}} [options={}] - 테스트 또는 런타임 주입 옵션입니다.
+     * @param {{rules?:object, fetchImpl?:Function, gameSession?:string}} [options={}] - 테스트 또는 런타임 주입 옵션입니다.
      */
     constructor(options = {}) {
         this.rules = options.rules || AI_CONSTANTS;
         this.fetchImpl = options.fetchImpl || null;
+        this.gameSession = this.#resolveGameSession(options.gameSession);
         this.contract = new AeroLiveLlmContract(this.rules);
         this.controllers = new Set();
         this.chatCache = new Map();
@@ -30,7 +39,6 @@ export class AeroLiveAiService {
         this.destroyed = false;
         this.idleStatus = this.rules.ENABLED === false ? '로컬 모드' : 'AI 준비';
         this.status = this.idleStatus;
-        this.hasReportedKeyError = false;
     }
 
     /**
@@ -56,21 +64,15 @@ export class AeroLiveAiService {
         }
 
         const viewerIds = this.#resolveViewerIds(context);
-        const modelId = this.#resolveModelId('chat');
-        const validationContext = { ...context, viewerIds };
-        let requestBody;
+        let proxyContext;
         try {
-            requestBody = this.contract.buildChatRequestBody(validationContext);
+            proxyContext = this.#buildChatProxyContext(context, viewerIds);
         } catch (error) {
             this.#setIdleStatus('로컬 폴백');
-            this.#reportSafeWarning('일반 채팅 요청 조립', error);
+            this.#reportSafeWarning('일반 채팅 요청 정리', error);
             return { chats: [], source: 'fallback' };
         }
-        const cacheKey = this.#buildCacheKey('chat', {
-            // 정규화된 JSON 데이터 전체를 키에 넣어 beat/event/reference/
-            // fallback 본문 중 하나라도 다르면 예전 배치를 재사용하지 않습니다.
-            promptData: requestBody.contents[0].parts[0].text
-        }, modelId);
+        const cacheKey = this.#buildCacheKey('chat', proxyContext);
         const cached = this.chatCache.get(cacheKey);
         if (cached) {
             this.#touchCacheEntry(cacheKey, cached);
@@ -80,11 +82,9 @@ export class AeroLiveAiService {
 
         return this.#enqueueRequest({
             lane: 'chat',
-            modelId,
             execute: (job) => this.#executeChatRequest(
                 job,
-                requestBody,
-                validationContext,
+                proxyContext,
                 cacheKey
             ),
             discardedResult: () => this.#buildDiscardedChatResult(),
@@ -115,11 +115,22 @@ export class AeroLiveAiService {
         }
 
         const viewerIds = this.#resolveViewerIds(context);
-        const modelId = this.#resolveModelId('intent');
+        let proxyContext;
+        try {
+            proxyContext = this.#buildIntentProxyContext(context, viewerIds);
+        } catch (error) {
+            this.#setIdleStatus('의도 판정 실패');
+            this.#reportSafeWarning('자유 채팅 요청 정리', error);
+            return {
+                ...this.#buildTechnicalFailureResult(
+                    'AI 판정을 시작할 수 없어 메시지를 전송하지 않았습니다.'
+                ),
+                source: 'technical-failure'
+            };
+        }
         return this.#enqueueRequest({
             lane: 'intent',
-            modelId,
-            execute: (job) => this.#executeIntentRequest(job, context, viewerIds),
+            execute: (job) => this.#executeIntentRequest(job, proxyContext),
             discardedResult: () => this.#buildDiscardedIntentResult(),
             overflowResult: () => ({
                 ...this.#buildTechnicalFailureResult(
@@ -183,7 +194,6 @@ export class AeroLiveAiService {
             id: ++this.requestSequence,
             generation: this.generation,
             lane: definition.lane,
-            modelId: definition.modelId,
             execute: definition.execute,
             discardedResult: definition.discardedResult,
             overflowResult: definition.overflowResult,
@@ -264,15 +274,14 @@ export class AeroLiveAiService {
     }
 
     /**
-     * 일반 채팅 공급자 요청 하나를 실행합니다.
+     * 일반 채팅 프록시 요청 하나를 실행합니다.
      * @param {object} job - 활성 FIFO 작업입니다.
-     * @param {object} requestBody - 큐 진입 전 고정한 Gemini 요청 본문입니다.
-     * @param {object} validationContext - 응답 슬롯을 검증할 방송 맥락입니다.
+     * @param {object} proxyContext - Worker로 보낼 최소 방송 맥락입니다.
      * @param {string} cacheKey - 채팅 캐시 키입니다.
      * @returns {Promise<object>} 채팅 생성 결과입니다.
      * @private
      */
-    async #executeChatRequest(job, requestBody, validationContext, cacheKey) {
+    async #executeChatRequest(job, proxyContext, cacheKey) {
         const cached = this.chatCache.get(cacheKey);
         if (cached) {
             this.#touchCacheEntry(cacheKey, cached);
@@ -281,14 +290,14 @@ export class AeroLiveAiService {
         }
 
         try {
-            const responseText = await this.#requestGemini(requestBody, job.modelId);
+            const responseText = await this.#requestProxy('chat', proxyContext);
             if (!this.#isJobCurrent(job)) {
                 return job.discardedResult();
             }
 
             const validated = this.contract.parseChatResponse(
                 responseText,
-                validationContext
+                proxyContext
             );
             if (!this.#isJobCurrent(job)) {
                 return job.discardedResult();
@@ -312,23 +321,21 @@ export class AeroLiveAiService {
     /**
      * 플레이어 메시지 의도 공급자 요청 하나를 실행합니다.
      * @param {object} job - 활성 FIFO 작업입니다.
-     * @param {object} context - 플레이어 메시지 맥락입니다.
-     * @param {string[]} viewerIds - 게임이 허용한 시청자 ID입니다.
+     * @param {object} proxyContext - Worker로 보낼 최소 방송 맥락입니다.
      * @returns {Promise<object>} 의도 판정 결과입니다.
      * @private
      */
-    async #executeIntentRequest(job, context, viewerIds) {
+    async #executeIntentRequest(job, proxyContext) {
         try {
-            const requestBody = this.contract.buildIntentRequestBody({
-                ...context,
-                viewerIds
-            });
-            const responseText = await this.#requestGemini(requestBody, job.modelId);
+            const responseText = await this.#requestProxy('intent', proxyContext);
             if (!this.#isJobCurrent(job)) {
                 return job.discardedResult();
             }
 
-            const validated = this.contract.parseIntentResponse(responseText, viewerIds);
+            const validated = this.contract.parseIntentResponse(
+                responseText,
+                proxyContext.viewerIds
+            );
             this.#setIdleStatus('AI 온라인');
             return {
                 ...validated,
@@ -451,21 +458,21 @@ export class AeroLiveAiService {
     }
 
     /**
-     * Gemini generateContent를 호출하고 검증 전 응답 텍스트만 반환합니다.
-     * @param {object} requestBody - 구조화 요청 본문입니다.
-     * @param {string} modelId - 해당 FIFO 작업에 고정된 Gemini 모델 ID입니다.
-     * @returns {Promise<string>} 후보 텍스트입니다.
+     * Worker API를 호출하고 Worker가 이미 검증한 strict JSON만 반환합니다.
+     * Gemini endpoint, 모델, systemInstruction, generationConfig는 브라우저에서 만들지 않습니다.
+     * @param {'chat'|'intent'} lane - Worker lane입니다.
+     * @param {object} context - Worker 계약에 맞춘 최소 게임 맥락입니다.
+     * @returns {Promise<string>} Worker가 검증한 strict JSON 문자열입니다.
      * @private
      */
-    async #requestGemini(requestBody, modelId) {
-        const apiKey = this.#readGeminiApiKey();
+    async #requestProxy(lane, context) {
         const fetchImpl = this.fetchImpl
             || (typeof window !== 'undefined' ? window.fetch?.bind(window) : globalThis.fetch);
         if (typeof fetchImpl !== 'function') {
             throw new Error('FETCH_UNAVAILABLE');
         }
 
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent`;
+        const requestId = this.#createRequestId();
         const controller = new AbortController();
         const timeoutFunction = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout;
         const clearTimeoutFunction = typeof window !== 'undefined' ? window.clearTimeout.bind(window) : clearTimeout;
@@ -492,58 +499,53 @@ export class AeroLiveAiService {
         );
         this.controllers.add(controller);
 
-        const providerPromise = (async () => {
-            const response = await fetchImpl(endpoint, {
+        const proxyPromise = (async () => {
+            const response = await fetchImpl(AERO_LIVE_PROXY_URL, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'x-goog-api-key': apiKey
+                    'X-Game-Session': this.gameSession
                 },
-                body: JSON.stringify(requestBody),
+                body: JSON.stringify({
+                    version: AERO_LIVE_PROXY_VERSION,
+                    requestId,
+                    lane,
+                    context
+                }),
                 signal: controller.signal
             });
             const responseText = await response.text();
-            if (responseText.length > MAX_RESPONSE_BYTES) {
-                throw new Error('RESPONSE_TOO_LARGE');
+            if (new TextEncoder().encode(responseText).byteLength > MAX_PROXY_RESPONSE_BYTES) {
+                throw new Error('PROXY_RESPONSE_TOO_LARGE');
             }
-            if (!response.ok) {
-                throw new Error(`HTTP_${response.status}`);
-            }
-
             let responseBody;
             try {
                 responseBody = JSON.parse(responseText);
-            } catch (error) {
-                throw new Error('INVALID_PROVIDER_JSON');
+            } catch {
+                throw new Error('PROXY_INVALID_RESPONSE');
             }
-
-            if (responseBody?.promptFeedback?.blockReason) {
-                throw new Error('PROVIDER_SAFETY_BLOCK');
+            const safeCode = String(responseBody?.error?.code || '');
+            if (!response.ok || responseBody?.ok !== true) {
+                throw new Error(
+                    SAFE_PROXY_ERROR_CODES.has(safeCode)
+                        ? `PROXY_${safeCode}`
+                        : 'PROXY_INTERNAL_ERROR'
+                );
             }
-            const candidate = responseBody?.candidates?.[0];
-            if (!candidate) {
-                throw new Error('MISSING_CANDIDATE');
+            if (responseBody.version !== AERO_LIVE_PROXY_VERSION
+                || responseBody.requestId !== requestId
+                || responseBody.lane !== lane
+                || typeof responseBody.text !== 'string') {
+                throw new Error('PROXY_INVALID_RESPONSE');
             }
-            const finishReason = String(candidate.finishReason || '');
-            if (!ACCEPTED_FINISH_REASONS.has(finishReason)) {
-                throw new Error(`FINISH_${finishReason || 'UNKNOWN'}`);
-            }
-            const parts = candidate?.content?.parts;
-            if (!Array.isArray(parts)) {
-                throw new Error('MISSING_CONTENT_PARTS');
-            }
-            const text = parts.map((part) => String(part?.text || '')).join('').trim();
-            if (!text) {
-                throw new Error('EMPTY_MODEL_RESPONSE');
-            }
-            return text;
+            return responseBody.text;
         })();
 
-        // Promise.race가 이미 끝난 뒤 공급자 구현이 늦게 reject해도 전역 unhandled가 되지 않습니다.
-        void providerPromise.catch(() => {});
+        // abort 뒤 프록시 구현이 늦게 reject해도 전역 unhandled로 남기지 않습니다.
+        void proxyPromise.catch(() => {});
 
         try {
-            return await Promise.race([providerPromise, abortGate]);
+            return await Promise.race([proxyPromise, abortGate]);
         } catch (error) {
             if (timedOut && error?.name === 'AbortError') {
                 throw new Error('REQUEST_TIMEOUT');
@@ -559,70 +561,109 @@ export class AeroLiveAiService {
     }
 
     /**
-     * 프로젝트 루트 후보에서 Gemini API 키를 읽습니다.
-     * @returns {string} API 키입니다.
+     * Worker 요청에서 사용할 메모리 전용 게임 세션 ID를 반환합니다.
+     * @param {*} value - 테스트에서 주입할 ID입니다.
+     * @returns {string} 안전한 세션 ID입니다.
      * @private
      */
-    #readGeminiApiKey() {
-        const nodeRequire = this.#getNodeRequire();
-        if (!nodeRequire) {
-            throw new Error('API_KEY_NODE_ACCESS_UNAVAILABLE');
+    #resolveGameSession(value) {
+        const supplied = String(value || '');
+        if (/^[A-Za-z0-9][A-Za-z0-9_-]{15,95}$/u.test(supplied)) {
+            return supplied;
         }
-
-        const fs = nodeRequire('fs');
-        const path = nodeRequire('path');
-        for (const candidate of this.#buildApiKeyPathCandidates(path)) {
-            if (!fs.existsSync(candidate)) {
-                continue;
-            }
-            const apiKey = fs.readFileSync(candidate, 'utf8').trim();
-            if (!apiKey || apiKey === 'PUT_YOUR_GEMINI_API_KEY_HERE') {
-                throw new Error('API_KEY_EMPTY');
-            }
-            return apiKey;
-        }
-
-        throw new Error('API_KEY_NOT_FOUND');
+        const randomId = globalThis.crypto?.randomUUID?.()
+            || `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+        return `aero_${randomId}`;
     }
 
     /**
-     * NW.js 또는 Node require 함수를 반환합니다.
-     * @returns {Function|null} require 함수입니다.
+     * 현재 탭 수명에만 연결된 requestId를 만듭니다.
+     * @returns {string} Worker 요청 ID입니다.
      * @private
      */
-    #getNodeRequire() {
-        if (typeof window !== 'undefined' && typeof window.require === 'function') {
-            return window.require;
-        }
-        if (typeof require === 'function') {
-            return require;
-        }
-        return null;
+    #createRequestId() {
+        this.proxyRequestSequence = (this.proxyRequestSequence || 0) + 1;
+        return `${this.gameSession}_r${this.proxyRequestSequence}`;
     }
 
     /**
-     * API 키 파일의 플랫폼별 후보 경로를 반환합니다.
-     * @param {object} path - Node path 모듈입니다.
-     * @returns {string[]} 중복 제거된 경로입니다.
+     * Worker의 chat 허용 필드만 새 객체로 만듭니다.
+     * @param {object} context - 장면 맥락입니다.
+     * @param {string[]} viewerIds - 게임이 허용한 시청자 ID입니다.
+     * @returns {object} 최소 chat context입니다.
      * @private
      */
-    #buildApiKeyPathCandidates(path) {
-        const candidates = [];
-        const nwObject = typeof window !== 'undefined'
-            ? (window.nw || (typeof nw !== 'undefined' ? nw : null))
+    #buildChatProxyContext(context, viewerIds) {
+        const toText = (value, maxChars) => Array.from(String(value ?? '')
+            .normalize('NFKC')
+            .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u034f]/gu, ' ')
+            .replace(/\s+/gu, ' ')
+            .trim())
+            .slice(0, maxChars)
+            .join('');
+        const toChats = (values, maxItems, includeViewerId) => (
+            Array.isArray(values) ? values.slice(0, maxItems).map((chat) => {
+                const sentiment = ['positive', 'negative', 'neutral'].includes(chat?.sentiment)
+                    ? chat.sentiment
+                    : 'neutral';
+                const safeChat = { sentiment, text: toText(chat?.text, 180) };
+                if (includeViewerId) {
+                    safeChat.viewerId = toText(
+                        chat?.viewerId || chat?.viewer_id || chat?.nickname,
+                        24
+                    );
+                }
+                return safeChat;
+            }) : []
+        );
+        const activeEvent = context?.activeEvent && typeof context.activeEvent === 'object'
+            ? {
+                id: toText(context.activeEvent.id, 80),
+                kind: toText(context.activeEvent.kind || context.activeEvent.type, 24),
+                text: toText(context.activeEvent.text, 180),
+                tone: toText(context.activeEvent.tone || context.activeEvent.sentiment, 24)
+            }
             : null;
+        return {
+            topicId: toText(context?.topicId, 40),
+            topicTitle: toText(context?.topicTitle ?? context?.topic?.title ?? context?.topic, 80),
+            topicConcept: toText(context?.topicConcept ?? context?.topic?.concept, 180),
+            beatId: toText(context?.beatId, 80),
+            beatIndex: Math.max(0, Math.min(999, Math.floor(Number(context?.beatIndex) || 0))),
+            beatCount: Math.max(0, Math.min(999, Math.floor(Number(context?.beatCount) || 0))),
+            heroText: toText(context?.heroText, 240),
+            mood: toText(context?.mood, 40),
+            activeEvent,
+            opinion: Math.max(-100, Math.min(100, Math.round(Number(context?.opinion) || 0))),
+            referenceChats: toChats(context?.referenceChats, 12, false),
+            fallbackChats: toChats(context?.fallbackChats, 16, true),
+            viewerIds: viewerIds.map((viewerId) => toText(viewerId, 24)).filter(Boolean)
+        };
+    }
 
-        if (typeof process !== 'undefined' && typeof process.cwd === 'function') {
-            candidates.push(path.join(process.cwd(), 'api_key.txt'));
-            candidates.push(path.join(process.cwd(), '..', 'api_key.txt'));
-        }
-        if (nwObject?.App?.startPath) {
-            candidates.push(path.join(nwObject.App.startPath, 'api_key.txt'));
-            candidates.push(path.join(nwObject.App.startPath, '..', 'api_key.txt'));
-        }
-        candidates.push(path.resolve('api_key.txt'));
-        candidates.push(path.resolve('..', 'api_key.txt'));
-        return [...new Set(candidates)];
+    /**
+     * Worker의 intent 허용 필드만 새 객체로 만듭니다.
+     * @param {object} context - 플레이어 입력 맥락입니다.
+     * @param {string[]} viewerIds - 게임이 허용한 시청자 ID입니다.
+     * @returns {object} 최소 intent context입니다.
+     * @private
+     */
+    #buildIntentProxyContext(context, viewerIds) {
+        const toText = (value, maxChars) => Array.from(String(value ?? '')
+            .normalize('NFKC')
+            .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u034f]/gu, ' ')
+            .replace(/\s+/gu, ' ')
+            .trim())
+            .slice(0, maxChars)
+            .join('');
+        return {
+            message: toText(context?.message, 140),
+            topic: toText(context?.topic, 40),
+            heroText: toText(context?.heroText, 240),
+            coreChatText: toText(context?.coreChatText, 140),
+            coreChatViewerId: toText(context?.coreChatViewerId, 24),
+            viewerIds: viewerIds.map((viewerId) => toText(viewerId, 24)).filter(Boolean)
+        };
     }
 
     /**
@@ -644,36 +685,17 @@ export class AeroLiveAiService {
     }
 
     /**
-     * 요청 lane에 지정된 실제 Gemini 모델 ID를 반환합니다.
-     * @param {'chat'|'intent'} lane - 공급자 요청 종류입니다.
-     * @returns {string} endpoint와 캐시 키에 함께 사용할 모델 ID입니다.
-     * @private
-     */
-    #resolveModelId(lane) {
-        const configured = lane === 'chat'
-            ? this.rules.CHAT_API_MODEL
-            : this.rules.INTENT_API_MODEL;
-        const modelId = String(configured || this.rules.API_MODEL || '').trim();
-        if (!modelId) {
-            throw new Error('API_MODEL_NOT_CONFIGURED');
-        }
-        return modelId;
-    }
-
-    /**
-     * 캐시 키를 현재 모델과 프롬프트 버전까지 포함해 만듭니다.
+     * 캐시 키를 프록시에 전달한 최소 맥락과 계약 버전으로 만듭니다.
      * @param {string} lane - 요청 종류입니다.
      * @param {object} payload - 키 데이터입니다.
-     * @param {string} modelId - 해당 요청이 실제 사용하는 모델 ID입니다.
      * @returns {string} 캐시 키입니다.
      * @private
      */
-    #buildCacheKey(lane, payload, modelId) {
+    #buildCacheKey(lane, payload) {
         return JSON.stringify({
             lane,
             schema: this.rules.SCHEMA_VERSION,
             prompt: this.rules.PROMPT_REVISION,
-            model: modelId,
             payload
         });
     }
@@ -711,15 +733,10 @@ export class AeroLiveAiService {
      * @private
      */
     #reportSafeWarning(label, error) {
-        const safeCode = String(error?.message || error || 'UNKNOWN_ERROR')
-            .replace(/[A-Za-z0-9_-]{24,}/g, '[REDACTED]')
-            .slice(0, 120);
-        if (safeCode.startsWith('API_KEY_')) {
-            if (this.hasReportedKeyError) {
-                return;
-            }
-            this.hasReportedKeyError = true;
-        }
+        const candidate = String(error?.message || error || 'UNKNOWN_ERROR');
+        const safeCode = SAFE_PROXY_ERROR_CODES.has(candidate.replace(/^PROXY_/u, ''))
+            ? candidate
+            : 'REQUEST_FAILED';
         console.warn(`[AeroLiveAiService] ${label} 폴백: ${safeCode}`);
     }
 
@@ -732,10 +749,7 @@ export class AeroLiveAiService {
     #isProviderSafetyBlock(error) {
         const code = String(error?.message || error || '').toUpperCase();
         return code === 'PROVIDER_SAFETY_BLOCK'
-            || code === 'FINISH_SAFETY'
-            || code === 'FINISH_PROHIBITED_CONTENT'
-            || code === 'FINISH_SPII'
-            || code === 'FINISH_BLOCKLIST';
+            || code === 'PROXY_PROVIDER_SAFETY_BLOCK';
     }
 
     /**

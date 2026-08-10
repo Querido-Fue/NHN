@@ -1,0 +1,42 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nhn-aero-live-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-10",
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "api.jukchang.com",
+      "custom_domain": true
+    }
+  ],
+  "secrets": {
+    "required": ["GEMINI_API_KEY"]
+  },
+  "ratelimits": [
+    {
+      "name": "AERO_LIVE_SESSION_LIMITER",
+      "namespace_id": "720001",
+      "simple": {
+        "limit": 18,
+        "period": 60
+      }
+    },
+    {
+      "name": "AERO_LIVE_IP_LIMITER",
+      "namespace_id": "720002",
+      "simple": {
+        "limit": 90,
+        "period": 60
+      }
+    },
+    {
+      "name": "AERO_LIVE_INVALID_LIMITER",
+      "namespace_id": "720003",
+      "simple": {
+        "limit": 20,
+        "period": 60
+      }
+    }
+  ]
+}

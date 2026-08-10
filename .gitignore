@@ -13,3 +13,18 @@
 !project/license
 !project/license/**
 !package.json
+!worker/
+!worker/**
+
+# Local secrets must never be staged, even when their parent directories are
+# otherwise included above.
+api_key.txt
+project/api_key.txt
+.dev.vars
+.env
+.env.*
+worker/.dev.vars
+worker/.env
+worker/.env.*
+worker/node_modules/
+!worker/.dev.vars.example
