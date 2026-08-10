@@ -1,6 +1,6 @@
 import { getDisplaySystem } from 'display/display_system.js';
 import { measurePerformanceSection } from 'debug/debug_system.js';
-import { getSetting } from 'save/save_system.js';
+import { getSetting } from 'runtime/runtime_settings.js';
 import { runtimeTool } from 'util/runtime_tool.js';
 import { OverlaySession } from './_overlay_session.js';
 import { ExitOverlay } from './_exit_overlay.js';
@@ -192,12 +192,11 @@ export class OverlayManager {
 
     /**
      * 진단 테스트 overlay를 엽니다.
-     * @param {'file'|'display'|'input'|'sound'} testType - 열 테스트 타입입니다.
+     * @param {'display'|'input'|'sound'} testType - 열 테스트 타입입니다.
      * @returns {string|null} 생성된 overlay id입니다.
      */
     openDiagnosticTestOverlay(testType) {
         const keyByType = {
-            [DIAGNOSTIC_TEST_TYPES.FILE]: OVERLAY_MANAGER_KEYS.DIAGNOSTIC_FILE,
             [DIAGNOSTIC_TEST_TYPES.DISPLAY]: OVERLAY_MANAGER_KEYS.DIAGNOSTIC_DISPLAY,
             [DIAGNOSTIC_TEST_TYPES.INPUT]: OVERLAY_MANAGER_KEYS.DIAGNOSTIC_INPUT,
             [DIAGNOSTIC_TEST_TYPES.SOUND]: OVERLAY_MANAGER_KEYS.DIAGNOSTIC_SOUND

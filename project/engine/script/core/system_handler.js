@@ -1,4 +1,4 @@
-import { SaveSystem } from 'save/save_system.js';
+import { RuntimeSettings } from 'runtime/runtime_settings.js';
 import { DisplaySystem } from 'display/display_system.js';
 import { AnimationSystem } from 'animation/animation_system.js';
 import { InputSystem } from 'input/input_system.js';
@@ -31,7 +31,7 @@ function normalizeSystemFactory(factory) {
 
 /**
  * @class SystemHandler
- * @description 엔진 핵심 서브 시스템(저장, 표시, 입력, UI, 씬 등)의 생성/초기화/업데이트 순서를 총괄합니다.
+ * @description 엔진 핵심 서브 시스템(런타임 설정, 표시, 입력, UI, 씬 등)의 생성/초기화/업데이트 순서를 총괄합니다.
  */
 export class SystemHandler {
     /**
@@ -51,10 +51,10 @@ export class SystemHandler {
     async init() {
         this.loadTime = performance.now().toFixed(1);
 
-        // 1. SaveSystem (설정 로드)
-        this.saveSystem = new SaveSystem();
-        await this.saveSystem.init();
-        this.logDebugInfo("SaveSystem 로드");
+        // 1. RuntimeSettings (비영속 설정 초기화)
+        this.settingsSystem = new RuntimeSettings();
+        await this.settingsSystem.init();
+        this.logDebugInfo("RuntimeSettings 초기화");
 
         // 2. SoundSystem (사운드 초기화 - 설정 의존)
         this.soundSystem = new SoundSystem();
@@ -123,7 +123,7 @@ export class SystemHandler {
      * @param {string} loadedModule - 로드된 모듈 이름
      */
     logDebugInfo(loadedModule) {
-        if (this.saveSystem.getSetting("debugMode")) {
+        if (this.settingsSystem.getSetting("debugMode")) {
             console.log("[" + (performance.now() - this.loadTime).toFixed(1) + "ms] " + loadedModule + " 완료");
         }
     }
@@ -348,7 +348,7 @@ export class SystemHandler {
     }
 
     /**
-     * 저장 직후 런타임 설정 변경을 관련 시스템에 즉시 반영합니다.
+     * 비영속 런타임 설정 변경을 관련 시스템에 즉시 반영합니다.
      * @param {object} [changedSettings={}] - 변경된 설정 키와 값입니다.
      * @returns {Promise<void>}
      */
@@ -362,12 +362,6 @@ export class SystemHandler {
             && this.uiSystem
             && typeof this.uiSystem.setLanguage === 'function') {
             this.uiSystem.setLanguage(changedSettings.language);
-        }
-
-        if (changedSettings.windowMode !== undefined
-            && this.displaySystem?.screenHandler
-            && typeof this.displaySystem.screenHandler.applyWindowMode === 'function') {
-            await this.displaySystem.screenHandler.applyWindowMode();
         }
 
         if (changedSettings.bgmVolume !== undefined
@@ -598,7 +592,7 @@ export class SystemHandler {
      * 메인 스레드의 최신 뷰포트/입력/설정을 시뮬레이션 런타임에 복제합니다.
      */
     #syncSimulationRuntime() {
-        if (!this.displaySystem || !this.inputSystem || !this.saveSystem) {
+        if (!this.displaySystem || !this.inputSystem || !this.settingsSystem) {
             return;
         }
 
@@ -646,12 +640,12 @@ export class SystemHandler {
      */
     #buildSimulationSettingsSnapshot() {
         const settings = {};
-        if (!this.saveSystem || typeof this.saveSystem.getSetting !== 'function') {
+        if (!this.settingsSystem || typeof this.settingsSystem.getSetting !== 'function') {
             return settings;
         }
 
         for (const key of SIMULATION_RUNTIME_SETTING_KEYS) {
-            settings[key] = this.saveSystem.getSetting(key);
+            settings[key] = this.settingsSystem.getSetting(key);
         }
 
         return settings;

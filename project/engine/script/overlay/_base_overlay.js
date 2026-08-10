@@ -6,7 +6,7 @@ import { getMouseFocus, setMouseFocus } from 'input/input_system.js';
 import { releaseUIItem } from 'ui/_ui_pool.js';
 import { PositioningHandler } from 'ui/layout/_positioning_handler.js';
 import { getData } from 'data/data_handler.js';
-import { getSetting } from 'save/save_system.js';
+import { getSetting } from 'runtime/runtime_settings.js';
 import { clampNumber } from 'util/number_util.js';
 import {
     DEFAULT_OVERLAY_PANEL_ID,

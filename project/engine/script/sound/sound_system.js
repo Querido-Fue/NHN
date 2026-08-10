@@ -1,4 +1,4 @@
-import { getSetting } from 'save/save_system.js';
+import { getSetting } from 'runtime/runtime_settings.js';
 import { getData } from 'data/data_handler.js';
 import { clampFiniteNumber } from 'util/number_util.js';
 

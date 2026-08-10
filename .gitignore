@@ -1,7 +1,10 @@
 *
 
 !.gitignore
+!.github/
+!.github/**
 !project/
+!project/index.html
 !project/engine/
 !project/engine/**
 !project/asset/

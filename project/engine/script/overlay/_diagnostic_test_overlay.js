@@ -10,12 +10,9 @@ import {
 } from 'input/input_system.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import {
-    getRuntimeStateFilePath,
-    getRuntimeStateValue,
     getSetting,
-    setRuntimeStateValue,
     setSettingBatch
-} from 'save/save_system.js';
+} from 'runtime/runtime_settings.js';
 import {
     getDiagnosticSampleState,
     pauseDiagnosticSample,
@@ -24,20 +21,15 @@ import {
     stopDiagnosticSample
 } from 'sound/sound_system.js';
 import { createFontString } from 'util/font_util.js';
-import { runtimeTool } from 'util/runtime_tool.js';
 
 export const DIAGNOSTIC_TEST_TYPES = Object.freeze({
-    FILE: 'file',
     DISPLAY: 'display',
     INPUT: 'input',
     SOUND: 'sound'
 });
 
-const FILE_IO_TEST_KEY = 'diagnosticFileIOTest';
-
 const DIAGNOSTIC_TEST_COPY = Object.freeze({
-    [DIAGNOSTIC_TEST_TYPES.FILE]: 'Save runtime state, then read it back from the engine save file.',
-    [DIAGNOSTIC_TEST_TYPES.DISPLAY]: 'Apply window, fullscreen, render scale, and 16:9 viewport settings.',
+    [DIAGNOSTIC_TEST_TYPES.DISPLAY]: 'Inspect the browser viewport and adjust the in-session render scale.',
     [DIAGNOSTIC_TEST_TYPES.INPUT]: 'Press keys or mouse buttons to watch the raw input state update.',
     [DIAGNOSTIC_TEST_TYPES.SOUND]: 'Play the sample asset and adjust its diagnostic playback volume.'
 });
@@ -53,7 +45,6 @@ const DIAGNOSTIC_FONT_SPECS = Object.freeze({
 });
 
 const DIAGNOSTIC_SIZE = Object.freeze({
-    [DIAGNOSTIC_TEST_TYPES.FILE]: { widthRatio: 0.60, heightRatio: 0.52 },
     [DIAGNOSTIC_TEST_TYPES.DISPLAY]: { widthRatio: 0.62, heightRatio: 0.54 },
     [DIAGNOSTIC_TEST_TYPES.INPUT]: { widthRatio: 0.88, heightRatio: 0.76 },
     [DIAGNOSTIC_TEST_TYPES.SOUND]: { widthRatio: 0.58, heightRatio: 0.50 }
@@ -262,22 +253,6 @@ function fitTextToWidth(text, font, maxWidth) {
     return `${value.slice(0, low)}${ellipsis}`;
 }
 
-function stringifyPreview(value) {
-    if (value === undefined) {
-        return 'undefined';
-    }
-
-    try {
-        return JSON.stringify(value, null, 2);
-    } catch (error) {
-        return String(error);
-    }
-}
-
-function wait(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function isMouseButtonActive(buttonName) {
     return isMousePressing(buttonName)
         || hasMouseState(buttonName, 'clicked', { includeConsumed: true });
@@ -285,11 +260,11 @@ function isMouseButtonActive(buttonName) {
 
 /**
  * @class DiagnosticTestOverlay
- * @description 엔진 진단용 파일/디스플레이/입력/사운드 테스트 overlay입니다.
+ * @description 엔진 진단용 디스플레이/입력/사운드 테스트 overlay입니다.
  */
 export class DiagnosticTestOverlay extends BaseOverlay {
     /**
-     * @param {'file'|'display'|'input'|'sound'} testType - 테스트 타입입니다.
+     * @param {'display'|'input'|'sound'} testType - 테스트 타입입니다.
      * @param {object} systemHandler - 런타임 설정 반영에 사용할 SystemHandler입니다.
      */
     constructor(testType, systemHandler) {
@@ -303,11 +278,8 @@ export class DiagnosticTestOverlay extends BaseOverlay {
 
         this.testType = Object.values(DIAGNOSTIC_TEST_TYPES).includes(testType)
             ? testType
-            : DIAGNOSTIC_TEST_TYPES.FILE;
+            : DIAGNOSTIC_TEST_TYPES.DISPLAY;
         this.systemHandler = systemHandler || null;
-        this.fileTestCounter = 0;
-        this.fileTestStatus = 'Ready';
-        this.fileTestReadValue = getRuntimeStateValue(FILE_IO_TEST_KEY) ?? null;
         this.displayTestStatus = 'Ready';
         this.soundStatus = 'Ready';
         this.soundVolume = 80;
@@ -319,7 +291,7 @@ export class DiagnosticTestOverlay extends BaseOverlay {
      * @override
      */
     _onResize() {
-        const size = DIAGNOSTIC_SIZE[this.testType] || DIAGNOSTIC_SIZE[DIAGNOSTIC_TEST_TYPES.FILE];
+        const size = DIAGNOSTIC_SIZE[this.testType] || DIAGNOSTIC_SIZE[DIAGNOSTIC_TEST_TYPES.DISPLAY];
         this.width = Math.min(this.UIWW * size.widthRatio, this.UIWW * 0.94);
         this.height = Math.min(this.WH * size.heightRatio, this.WH * 0.88);
         this.fonts = Object.fromEntries(
@@ -399,9 +371,7 @@ export class DiagnosticTestOverlay extends BaseOverlay {
      * @override
      */
     _drawOverlayDecorations() {
-        if (this.testType === DIAGNOSTIC_TEST_TYPES.FILE) {
-            this.#drawFileTestContent();
-        } else if (this.testType === DIAGNOSTIC_TEST_TYPES.DISPLAY) {
+        if (this.testType === DIAGNOSTIC_TEST_TYPES.DISPLAY) {
             this.#drawDisplayTestContent();
         } else if (this.testType === DIAGNOSTIC_TEST_TYPES.INPUT) {
             this.#drawInputTestContent();
@@ -411,8 +381,7 @@ export class DiagnosticTestOverlay extends BaseOverlay {
     }
 
     #getTitle() {
-        if (this.testType === DIAGNOSTIC_TEST_TYPES.FILE) return 'File Read / Write Test';
-        if (this.testType === DIAGNOSTIC_TEST_TYPES.DISPLAY) return 'Window / Resolution Test';
+        if (this.testType === DIAGNOSTIC_TEST_TYPES.DISPLAY) return 'Browser / Render Test';
         if (this.testType === DIAGNOSTIC_TEST_TYPES.INPUT) return 'Input Test';
         if (this.testType === DIAGNOSTIC_TEST_TYPES.SOUND) return 'Sound Playback Test';
         return 'Diagnostic Test';
@@ -431,23 +400,6 @@ export class DiagnosticTestOverlay extends BaseOverlay {
     }
 
     #buildBottomControls(handler) {
-        if (this.testType === DIAGNOSTIC_TEST_TYPES.FILE) {
-            handler.bottomSpace('WH', 2.1)
-                .bottomGroup('file-actions').justifyContent('right', 'WW', 1).align('right')
-                .item('button').stylePreset('overlay_interact_button').width('content').buttonText('Write').buttonColor(ColorSchemes.Overlay.Button.Confirm).icon('check').onClick(() => {
-                    void this.#writeFileTestPayload();
-                })
-                .item('button').stylePreset('overlay_interact_button').width('content').buttonText('Read').buttonColor(ColorSchemes.Overlay.Button.Confirm).icon('arrow').onClick(() => {
-                    this.#readFileTestPayload();
-                })
-                .item('button').stylePreset('overlay_interact_button').width('content').buttonText('Clear').buttonColor(ColorSchemes.Overlay.Button.Cancel).icon('deny').onClick(() => {
-                    void this.#clearFileTestPayload();
-                })
-                .item('button').stylePreset('overlay_interact_button').width('content').buttonText('Close').buttonColor(ColorSchemes.Overlay.Button.Cancel).icon('deny').onClick(this.close.bind(this))
-                .endGroup();
-            return;
-        }
-
         if (this.testType === DIAGNOSTIC_TEST_TYPES.DISPLAY) {
             handler.bottomSpace('WH', 2.1)
                 .bottomGroup('display-actions-b').justifyContent('right', 'WW', 0.55).align('right')
@@ -456,18 +408,6 @@ export class DiagnosticTestOverlay extends BaseOverlay {
                 })
                 .item('button').stylePreset('overlay_interact_button').width('content').buttonText('100%').buttonColor(ColorSchemes.Overlay.Button.Confirm).icon('check').onClick(() => {
                     void this.#applyRenderScale(100);
-                })
-                .endGroup()
-                .bottomSpace('WH', 1.2)
-                .bottomGroup('display-actions-a').justifyContent('right', 'WW', 0.55).align('right')
-                .item('button').stylePreset('overlay_interact_button').width('content').buttonText('1280').buttonColor(ColorSchemes.Overlay.Button.Confirm).icon('confirm').onClick(() => {
-                    void this.#applyWindowedDisplayMode(1280, 720);
-                })
-                .item('button').stylePreset('overlay_interact_button').width('content').buttonText('1920').buttonColor(ColorSchemes.Overlay.Button.Confirm).icon('confirm').onClick(() => {
-                    void this.#applyWindowedDisplayMode(1920, 1080);
-                })
-                .item('button').stylePreset('overlay_interact_button').width('content').buttonText('Full').buttonColor(ColorSchemes.Overlay.Button.Confirm).icon('check').onClick(() => {
-                    void this.#applyFullscreenDisplayMode();
                 })
                 .item('button').stylePreset('overlay_interact_button').width('content').buttonText('Close').buttonColor(ColorSchemes.Overlay.Button.Cancel).icon('deny').onClick(this.close.bind(this))
                 .endGroup();
@@ -516,41 +456,11 @@ export class DiagnosticTestOverlay extends BaseOverlay {
         };
     }
 
-    #drawFileTestContent() {
-        const rect = this.#getContentRect();
-        const currentValue = getRuntimeStateValue(FILE_IO_TEST_KEY);
-        const preview = stringifyPreview(this.fileTestReadValue ?? currentValue);
-        const labelW = this.#uww(7.2);
-
-        this.#drawSectionLabel(rect.x, rect.y, 'SAVE TARGET');
-        this.#drawInfoLine(rect.x, rect.y + this.#uwh(3.4), 'File', getRuntimeStateFilePath(), labelW, rect.w - labelW);
-        this.#drawInfoLine(rect.x, rect.y + this.#uwh(6.5), 'Key', FILE_IO_TEST_KEY, labelW, rect.w - labelW);
-        this.#drawInfoLine(rect.x, rect.y + this.#uwh(9.6), 'Status', this.fileTestStatus, labelW, rect.w - labelW);
-        this.#drawDivider(rect.x, rect.y + this.#uwh(12.6), rect.w);
-
-        const previewY = rect.y + this.#uwh(16.2);
-        this.#drawSectionLabel(rect.x, previewY - this.#uwh(3.0), 'READ VALUE');
-
-        const lineH = this.#uwh(2.4);
-        const previewLines = preview.split('\n').slice(0, Math.max(1, Math.floor((rect.h - (previewY - rect.y)) / lineH)));
-        for (let index = 0; index < previewLines.length; index++) {
-            render(this.layer, {
-                shape: 'text',
-                x: rect.x,
-                y: previewY + (index * lineH),
-                text: fitTextToWidth(previewLines[index], this.fonts.MONO_SMALL, rect.w),
-                font: this.fonts.MONO_SMALL,
-                fill: ColorSchemes.Overlay.Text.Sub || 'rgba(255,255,255,0.68)',
-                baseline: 'middle'
-            });
-        }
-    }
-
     #drawDisplayTestContent() {
         const rect = this.#getContentRect();
         const screenHandler = getDisplaySystem()?.screenHandler;
         const metrics = [
-            ['Window mode', getSetting('windowMode')],
+            ['Runtime storage', 'None (session only)'],
             ['Render scale', `${getSetting('renderScale')}%`],
             ['Aspect policy', '16:9 letterbox'],
             ['Internal render', `${getWW()} x ${getWH()}`],
@@ -809,79 +719,6 @@ export class DiagnosticTestOverlay extends BaseOverlay {
             stroke: 'rgba(255,255,255,0.13)',
             lineWidth: 1
         });
-    }
-
-    async #writeFileTestPayload() {
-        this.fileTestCounter += 1;
-        const payload = {
-            message: 'JukChang Engine file IO diagnostic payload',
-            counter: this.fileTestCounter,
-            savedAt: new Date().toISOString(),
-            render: {
-                width: getWW(),
-                height: getWH()
-            }
-        };
-
-        this.fileTestStatus = 'Writing...';
-        try {
-            await setRuntimeStateValue(FILE_IO_TEST_KEY, payload);
-            this.fileTestReadValue = getRuntimeStateValue(FILE_IO_TEST_KEY) ?? null;
-            this.fileTestStatus = `Wrote payload #${this.fileTestCounter}`;
-        } catch (error) {
-            console.error(error);
-            this.fileTestStatus = error?.message || String(error);
-        }
-    }
-
-    #readFileTestPayload() {
-        this.fileTestReadValue = getRuntimeStateValue(FILE_IO_TEST_KEY) ?? null;
-        this.fileTestStatus = this.fileTestReadValue === null
-            ? 'Read complete: null'
-            : 'Read complete';
-    }
-
-    async #clearFileTestPayload() {
-        this.fileTestStatus = 'Clearing...';
-        try {
-            await setRuntimeStateValue(FILE_IO_TEST_KEY, null);
-            this.fileTestReadValue = null;
-            this.fileTestStatus = 'Cleared payload';
-        } catch (error) {
-            console.error(error);
-            this.fileTestStatus = error?.message || String(error);
-        }
-    }
-
-    async #applyWindowedDisplayMode(width, height) {
-        this.displayTestStatus = `Applying windowed ${width}x${height}...`;
-        try {
-            await setSettingBatch({ windowMode: 'windowed', width, height });
-            runtimeTool().setFullScreen(false);
-            await wait(80);
-            runtimeTool().setWindowSize(width, height);
-            runtimeTool().setWindowPositionCenter();
-            await wait(120);
-            await this.systemHandler?.applyRuntimeSettings?.({ windowMode: 'windowed', width, height });
-            this.systemHandler?.resize?.();
-            this.displayTestStatus = `Windowed ${width}x${height}`;
-        } catch (error) {
-            console.error(error);
-            this.displayTestStatus = error?.message || String(error);
-        }
-    }
-
-    async #applyFullscreenDisplayMode() {
-        this.displayTestStatus = 'Applying fullscreen...';
-        try {
-            await setSettingBatch({ windowMode: 'fullscreen' });
-            await this.systemHandler?.applyRuntimeSettings?.({ windowMode: 'fullscreen' });
-            this.systemHandler?.resize?.();
-            this.displayTestStatus = 'Fullscreen';
-        } catch (error) {
-            console.error(error);
-            this.displayTestStatus = error?.message || String(error);
-        }
     }
 
     async #applyRenderScale(renderScale) {

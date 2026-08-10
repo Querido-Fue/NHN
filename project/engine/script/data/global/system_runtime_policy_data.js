@@ -2,7 +2,7 @@
  * SystemHandler의 프레임 실행 정책과 런타임 설정 반영 키 목록입니다.
  */
 export const SYSTEM_RUNTIME_POLICY_DATA = Object.freeze({
-    DISPLAY_REFRESH_SETTING_KEYS: Object.freeze(['windowMode', 'renderScale']),
+    DISPLAY_REFRESH_SETTING_KEYS: Object.freeze(['renderScale']),
     SIMULATION_RUNTIME_SETTING_KEYS: Object.freeze([
         'debugMode'
     ]),

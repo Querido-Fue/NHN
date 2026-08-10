@@ -1,5 +1,5 @@
 import { getData } from 'data/data_handler.js';
-import { getSetting, setSetting } from 'save/save_system.js';
+import { getSetting, setSetting } from 'runtime/runtime_settings.js';
 import { resolveFiniteNumber } from 'util/number_util.js';
 
 const GLOBAL_CONSTANTS = getData('GLOBAL_CONSTANTS');

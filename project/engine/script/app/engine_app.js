@@ -199,7 +199,7 @@ export class EngineApp {
 
     /**
      * 앱을 종료합니다.
-     * 모든 데이터를 저장한 후 창을 닫습니다.
+     * 실행 루프를 멈추고 창 닫기를 요청합니다. 브라우저 버전은 데이터를 저장하지 않습니다.
      */
     close() {
         if (this.forceCloseRequested) {
@@ -208,9 +208,7 @@ export class EngineApp {
 
         this.forceCloseRequested = true;
         this.stop();
-        this.systemHandler.saveSystem.saveAll().then(() => {
-            setTimeout(() => runtimeTool().closeWindow(), 100);
-        });
+        setTimeout(() => runtimeTool().closeWindow(), 100);
     }
 
     /**

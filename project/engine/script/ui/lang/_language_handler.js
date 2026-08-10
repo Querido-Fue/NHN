@@ -1,4 +1,4 @@
-import { getSetting } from 'save/save_system.js';
+import { getSetting } from 'runtime/runtime_settings.js';
 import {
     LANGUAGE_REGISTRY,
     DEFAULT_LANGUAGE_KEY,

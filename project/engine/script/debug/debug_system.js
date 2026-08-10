@@ -2,7 +2,7 @@ import { MouseDebugger } from './_mouse_debugger.js';
 import { ErrorHandler } from './_error_handler.js';
 import { PoolDebugger } from './_pool_debug.js';
 import { PerformanceDebugger } from './_performance_debug.js';
-import { getSetting } from 'save/save_system.js';
+import { getSetting } from 'runtime/runtime_settings.js';
 
 let debugSystemInstance = null;
 

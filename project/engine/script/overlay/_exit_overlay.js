@@ -1,7 +1,7 @@
 import { BaseOverlay } from './_base_overlay.js';
 import { getLangString } from 'ui/ui_system.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
-import { getSetting } from 'save/save_system.js';
+import { getSetting } from 'runtime/runtime_settings.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { getData } from 'data/data_handler.js';
 import { applyOverlayConfirmButtonIcon } from './_overlay_confirm_icon.js';

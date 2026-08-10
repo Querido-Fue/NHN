@@ -7,7 +7,7 @@ import {
     render
 } from 'display/display_system.js';
 import { OverlaySession } from 'overlay/_overlay_session.js';
-import { getSetting } from 'save/save_system.js';
+import { getSetting } from 'runtime/runtime_settings.js';
 import { createFontString, truncateTextToWidth, wrapTextByCharacters } from 'util/font_util.js';
 import { buildVisibleChatRows } from './_aero_live_chat_layout.mjs';
 import {

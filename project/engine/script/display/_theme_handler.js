@@ -1,9 +1,6 @@
 import { getData } from 'data/data_handler.js';
 import { setBackgroundColor } from 'display/display_system.js';
 import { colorUtil } from 'util/color_util.js';
-const fs = require('fs');
-const fsPromises = fs.promises;
-const path = require('path');
 
 const THEMES = getData('THEMES');
 const DEFAULT_THEME_KEY = getData('DEFAULT_THEME_KEY');
@@ -67,30 +64,10 @@ export class ThemeHandler {
     }
 
     /**
-     * 저장된 설정 파일(settings.json)을 로드하여 초기 테마를 구성합니다.
+     * 비영속 기본 테마를 적용합니다. 브라우저 실행은 이전 설정을 읽거나 저장하지 않습니다.
      */
     async init() {
-        let themeKey = DEFAULT_THEME_KEY;
-        try {
-            const dataDir = path.join(process.cwd(), 'save');
-            const settingsPath = path.join(dataDir, 'settings.json');
-
-            try {
-                await fsPromises.access(settingsPath);
-                const data = JSON.parse(await fsPromises.readFile(settingsPath, 'utf-8'));
-                if (typeof data.theme === 'string') {
-                    themeKey = data.theme;
-                } else if (typeof data.darkMode === 'boolean') {
-                    themeKey = resolveLegacyThemeKey(data.darkMode);
-                }
-            } catch (err) {
-                // 파일이 없거나 읽기 에러
-            }
-        } catch (e) {
-            console.error('ThemeHandler: 초기 설정 로드에 실패했습니다:', e);
-        }
-
-        this.setTheme(themeKey, false); // WebGL 미초기화 상태이므로 화면 갱신은 안 함
+        this.setTheme(DEFAULT_THEME_KEY, false); // WebGL 미초기화 상태이므로 화면 갱신은 안 함
         this.updateBackgroundColor();
     }
 

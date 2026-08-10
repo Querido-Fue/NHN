@@ -5,7 +5,7 @@ import { consumeMouseState, getMouseInput, getMouseFocus, hasMouseState, isMouse
 import { ColorSchemes } from "display/_theme_handler.js";
 import { colorUtil, formatRgba } from "util/color_util.js";
 import { createFontString, truncateTextToWidth } from "util/font_util.js";
-import { getSetting } from "save/save_system.js";
+import { getSetting } from "runtime/runtime_settings.js";
 
 /**
  * @class DropdownElement

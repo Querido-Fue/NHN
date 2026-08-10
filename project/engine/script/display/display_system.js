@@ -4,7 +4,7 @@ import { WebGLHandler } from './webgl/_webgl_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { colorUtil } from 'util/color_util.js';
 import { ThemeHandler, setTheme } from 'display/_theme_handler.js';
-import { getSetting } from 'save/save_system.js';
+import { getSetting } from 'runtime/runtime_settings.js';
 import { getData } from 'data/data_handler.js';
 import { CanvasSurfacePool } from './_surface_pool.js';
 import { VignetteRenderer } from './_vignette_renderer.js';

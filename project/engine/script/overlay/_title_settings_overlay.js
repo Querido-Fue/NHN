@@ -2,16 +2,12 @@ import { BaseOverlay } from './_base_overlay.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getData } from 'data/data_handler.js';
-import { getSetting, previewSettingBatch, setSetting } from 'save/save_system.js';
+import { getSetting, previewSettingBatch, setSetting } from 'runtime/runtime_settings.js';
 import { setBgmVolume, setSfxVolume } from 'sound/sound_system.js';
 import { createFontString } from 'util/font_util.js';
 
 const TITLE_SCENE_CONSTANTS = getData('TITLE_SCENE_CONSTANTS');
 const SETTINGS = TITLE_SCENE_CONSTANTS.SETTINGS_OVERLAY;
-const WINDOW_MODE_ITEMS = Object.freeze([
-    Object.freeze({ label: '전체화면', value: 'fullscreen' }),
-    Object.freeze({ label: '창모드', value: 'windowed' })
-]);
 
 /**
  * @class TitleSettingsOverlay
@@ -31,7 +27,6 @@ export class TitleSettingsOverlay extends BaseOverlay {
         this.systemHandler = systemHandler || null;
         this.bgmVolume = getSetting('bgmVolume') ?? 100;
         this.sfxVolume = getSetting('sfxVolume') ?? 100;
-        this.windowMode = getSetting('windowMode') || 'fullscreen';
     }
 
     /**
@@ -49,7 +44,6 @@ export class TitleSettingsOverlay extends BaseOverlay {
         this._releaseElements();
         this.bgmVolume = getSetting('bgmVolume') ?? this.bgmVolume;
         this.sfxVolume = getSetting('sfxVolume') ?? this.sfxVolume;
-        this.windowMode = getSetting('windowMode') || this.windowMode;
 
         const titleFont = this.#font(SETTINGS.TITLE_FONT_WH, 600);
         const labelFont = this.#font(SETTINGS.LABEL_FONT_WH, 700);
@@ -133,35 +127,6 @@ export class TitleSettingsOverlay extends BaseOverlay {
                     .onChange((value) => this.#previewSfxVolume(value))
                     .onCommit((value) => {
                         void this.#commitSetting('sfxVolume', value);
-                    })
-                    .vAlign('center')
-                .spacer('WH', SETTINGS.ROW_SIDE_PADDING_WH)
-            .endGroup()
-            .space('WH', SETTINGS.ROW_GAP_WH)
-            .group('screen-row')
-                .width('fill')
-                .height('WH', SETTINGS.ROW_HEIGHT_WH)
-                .justifyContent('left', 'WH', SETTINGS.GROUP_GAP_WH)
-                .spacer('WH', SETTINGS.ROW_SIDE_PADDING_WH)
-                .item('text', 'screen-label')
-                    .stylePreset('H4_BOLD')
-                    .text('화면 모드')
-                    .fill(ColorSchemes.Overlay.Text.Item)
-                    .prop('font', labelFont)
-                    .width('WH', SETTINGS.LABEL_WIDTH_WH)
-                    .vAlign('center')
-                .spacer()
-                .item('segment_control', 'window-mode')
-                    .items(WINDOW_MODE_ITEMS)
-                    .setValue(this.windowMode)
-                    .width('WH', SETTINGS.CONTROL_WIDTH_WH)
-                    .height('WH', SETTINGS.SEGMENT_HEIGHT_WH)
-                    .radius('absolute', 0)
-                    .prop('font', controlFont)
-                    .prop('lineWidth', controlBorderWidth)
-                    .onChange((value) => {
-                        this.windowMode = value;
-                        void this.#commitSetting('windowMode', value);
                     })
                     .vAlign('center')
                 .spacer('WH', SETTINGS.ROW_SIDE_PADDING_WH)

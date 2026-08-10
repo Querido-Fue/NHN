@@ -9,7 +9,7 @@ import {
 import { ColorSchemes } from 'display/_theme_handler.js';
 import { getDelta } from 'engine/time_handler.js';
 import { getMouseInput } from 'input/input_system.js';
-import { getSetting } from 'save/save_system.js';
+import { getSetting } from 'runtime/runtime_settings.js';
 import { parseUIData } from 'ui/layout/_positioning_handler.js';
 import { createFontString, wrapTextByCharacters } from 'util/font_util.js';
 import { clampNumber } from 'util/number_util.js';

@@ -51,15 +51,6 @@ const DIAGNOSTIC_BUTTONS = Object.freeze([
         }
     },
     {
-        id: 'fileIoTest',
-        icon: 'check',
-        label: 'File IO Test Overlay',
-        description: 'BaseOverlay + runtime_state read / write',
-        run(scene) {
-            scene.sceneSystem.systemHandler.overlayManager?.openDiagnosticTestOverlay?.(DIAGNOSTIC_TEST_TYPES.FILE);
-        }
-    },
-    {
         id: 'displayTest',
         icon: 'confirm',
         label: 'Display Test Overlay',
