@@ -121,7 +121,9 @@ export class SceneSystem {
      * 초기 씬을 로드합니다.
      */
     async init() {
-        this.#setScene(this.initialSceneFactory(this), this.initialSceneState);
+        const initialScene = await Promise.resolve(this.initialSceneFactory(this));
+        await this.#waitForTransitionReady(initialScene);
+        this.#setScene(initialScene, this.initialSceneState);
     }
 
     /**

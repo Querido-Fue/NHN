@@ -9,6 +9,86 @@ body {
     background-color: #000000;
 }
 
+#loading-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 200000;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    box-sizing: border-box;
+    background:
+        radial-gradient(circle at 74% 18%, rgba(98, 214, 255, 0.24), transparent 32%),
+        radial-gradient(circle at 20% 84%, rgba(66, 224, 208, 0.2), transparent 36%),
+        linear-gradient(145deg, #06182f, #0d4164 56%, #071a30);
+    color: #f5feff;
+    opacity: 1;
+    visibility: visible;
+    transition: opacity 220ms ease, visibility 220ms ease;
+}
+
+#loading-screen.is-complete {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.loading-card {
+    width: min(420px, 100%);
+    padding: clamp(28px, 5vw, 44px);
+    box-sizing: border-box;
+    border: 1px solid rgba(245, 254, 255, 0.36);
+    border-radius: 24px;
+    background: linear-gradient(140deg, rgba(9, 45, 74, 0.84), rgba(5, 24, 47, 0.72));
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.loading-kicker {
+    margin: 0 0 10px;
+    color: #7af2e7;
+    font-size: 13px;
+    font-weight: 900;
+    letter-spacing: 0.16em;
+}
+
+.loading-card h1 {
+    margin: 0;
+    font-size: clamp(25px, 5vw, 34px);
+    font-weight: 900;
+    letter-spacing: -0.04em;
+}
+
+.loading-card > p:not(.loading-kicker) {
+    margin: 13px 0 22px;
+    color: rgba(245, 254, 255, 0.76);
+    font-size: 14px;
+}
+
+.loading-progress-track {
+    height: 9px;
+    overflow: hidden;
+    border: 1px solid rgba(245, 254, 255, 0.32);
+    border-radius: 999px;
+    background: rgba(1, 14, 31, 0.54);
+}
+
+.loading-progress-bar {
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #42e0d0, #81c9ff 54%, #f3ffff);
+    box-shadow: 0 0 18px rgba(111, 238, 238, 0.68);
+    transition: width 120ms ease-out;
+}
+
+.loading-progress-text {
+    margin: 10px 0 0 !important;
+    color: rgba(245, 254, 255, 0.88) !important;
+    font-size: 12px !important;
+    font-weight: 800;
+    text-align: right;
+}
+
 html {
     cursor: none;
 }

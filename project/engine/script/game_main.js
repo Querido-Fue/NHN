@@ -1,8 +1,6 @@
 import { EngineApp } from 'engine/app/engine_app.js';
 import { SystemHandler } from 'core/system_handler.js';
-import { TitleScene } from 'scene/title/_title_scene.js';
 import { AeroLiveScene } from 'scene/aero_live/_aero_live_scene.js';
-import { TycoonScene } from 'scene/tycoon/_tycoon_scene.js';
 import { TimeHandler } from 'engine/time_handler.js';
 import { MathUtil } from 'util/math_util.js';
 import { ColorUtil } from 'util/color_util.js';
@@ -29,9 +27,7 @@ export async function initializeGameRuntime() {
                 initialSceneState: 'aeroLive',
                 initialSceneFactory: (sceneSystem) => new AeroLiveScene(sceneSystem),
                 sceneFactories: {
-                    title: (sceneSystem) => new TitleScene(sceneSystem),
-                    aeroLive: (sceneSystem) => new AeroLiveScene(sceneSystem),
-                    tycoon: (sceneSystem) => new TycoonScene(sceneSystem)
+                    aeroLive: (sceneSystem) => new AeroLiveScene(sceneSystem)
                 }
             }
         });
@@ -43,6 +39,7 @@ export async function initializeGameRuntime() {
         window.Game = GameApp;
         GameApp.start();
         if (smokeState) smokeState.stage = 'ready';
+        return GameApp;
     } catch (e) {
         const smokeState = window.__AERO_LIVE_NW_SMOKE_STATE__;
         if (smokeState) {
@@ -50,6 +47,7 @@ export async function initializeGameRuntime() {
             smokeState.error = String(e?.message || e || 'UNKNOWN_ERROR').slice(0, 300);
         }
         console.warn('게임 런타임 초기화 중 오류가 발생했습니다.\n', e);
+        return null;
     }
 }
 

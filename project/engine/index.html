@@ -31,6 +31,17 @@
 </head>
 
 <body>
+    <section id="loading-screen" aria-live="polite" aria-label="AERO LIVE 로딩 중">
+        <div class="loading-card">
+            <p class="loading-kicker">AERO LIVE</p>
+            <h1>방송 준비 중</h1>
+            <p id="loading-message">필수 리소스를 불러오고 있습니다.</p>
+            <div class="loading-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div id="loading-progress-bar" class="loading-progress-bar"></div>
+            </div>
+            <p id="loading-progress-text" class="loading-progress-text">0%</p>
+        </div>
+    </section>
     <canvas class="canvas" id="background"></canvas>
     <canvas class="canvas" id="object"></canvas>
     <canvas class="canvas" id="effect"></canvas>

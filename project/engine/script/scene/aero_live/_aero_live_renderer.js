@@ -280,6 +280,23 @@ export class AeroLiveRenderer {
             image.src = TOPIC_SELECT_ARTWORK_PATH;
         }
 
+        if (DONATION_ALERT_GIF_PATH) {
+            const image = new Image();
+            const record = this.donationAlertAsset;
+            record.image = image;
+            pendingLoads.push(new Promise((resolve) => {
+                const settle = (ready) => {
+                    if (record.ready || record.failed) return;
+                    record.ready = ready;
+                    record.failed = !ready;
+                    resolve();
+                };
+                image.onload = () => settle(true);
+                image.onerror = () => settle(false);
+            }));
+            image.src = DONATION_ALERT_GIF_PATH;
+        }
+
         for (const [rawPose, rawPath] of Object.entries(HERO_POSE_PATHS)) {
             const pose = String(rawPose || '').trim().toLowerCase();
             const path = String(rawPath || '').trim();
@@ -333,7 +350,8 @@ export class AeroLiveRenderer {
         const wallpaperSettled = this.wallpaperAssetRecords.every((record) => record.ready || record.failed);
         const topicArtworkSettled = this.topicSelectArtwork.ready || this.topicSelectArtwork.failed;
         const liveStageSettled = this.liveStageBackground.ready || this.liveStageBackground.failed;
-        return this.destroyed || (heroSettled && wallpaperSettled && topicArtworkSettled && liveStageSettled)
+        const donationAlertSettled = this.donationAlertAsset.ready || this.donationAlertAsset.failed;
+        return this.destroyed || (heroSettled && wallpaperSettled && topicArtworkSettled && liveStageSettled && donationAlertSettled)
             ? Promise.resolve()
             : this.readyPromise;
     }
