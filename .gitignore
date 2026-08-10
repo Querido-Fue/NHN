@@ -13,6 +13,10 @@
 !project/license
 !project/license/**
 !package.json
+!evaluation/
+!evaluation/test_aero_live_ai_service.mjs
+!evaluation/test_aero_live_api_client.mjs
+!evaluation/test_aero_live_proxy_static_security.mjs
 !worker/
 !worker/**
 

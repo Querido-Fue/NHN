@@ -39,6 +39,8 @@ https://api.jukchang.com/v1/aero-live
 
 The only allowed browser Origin is exactly `https://querido-fue.github.io`. There is no wildcard Origin and no credentialed CORS mode.
 
+The browser endpoint and proxy version are configured in `project/engine/script/data/scene/aero_live/aero_live_scene_constants.js`. In a healthy Pages deployment, the browser Network tab shows `https://api.jukchang.com/v1/aero-live` only; a Gemini API URL in the browser means the deployment is incorrect. Chat failures use the game's existing local fallback path, while intent failures remain non-actionable technical failures.
+
 ## Request context contract
 
 The Worker discards every unrecognized context key and creates a new safe object before calling `AeroLiveLlmContract`.

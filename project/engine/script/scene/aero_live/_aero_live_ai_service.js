@@ -1,10 +1,8 @@
 import { getData } from 'data/data_handler.js';
+import { AeroLiveApiClient } from './_aero_live_api_client.js';
 import { AeroLiveLlmContract } from './_aero_live_llm_contract.mjs';
 
 const AI_CONSTANTS = getData('AERO_LIVE_SCENE_CONSTANTS').AI;
-const AERO_LIVE_PROXY_URL = 'https://api.jukchang.com/v1/aero-live';
-const AERO_LIVE_PROXY_VERSION = 'aero-live-proxy-v1';
-const MAX_PROXY_RESPONSE_BYTES = 96 * 1024;
 const SAFE_PROXY_ERROR_CODES = new Set([
     'INVALID_ORIGIN', 'INVALID_METHOD', 'INVALID_CONTENT_TYPE', 'INVALID_JSON',
     'INVALID_VERSION', 'INVALID_LANE', 'INVALID_REQUEST_ID', 'INVALID_SESSION',
@@ -19,14 +17,19 @@ const SAFE_PROXY_ERROR_CODES = new Set([
  */
 export class AeroLiveAiService {
     /**
-     * @param {{rules?:object, fetchImpl?:Function, gameSession?:string}} [options={}] - 테스트 또는 런타임 주입 옵션입니다.
+     * @param {{rules?:object, fetchImpl?:Function, gameSession?:string, apiClient?:AeroLiveApiClient}} [options={}] - 테스트 또는 런타임 주입 옵션입니다.
      */
     constructor(options = {}) {
         this.rules = options.rules || AI_CONSTANTS;
-        this.fetchImpl = options.fetchImpl || null;
-        this.gameSession = this.#resolveGameSession(options.gameSession);
+        this.apiClient = options.apiClient || new AeroLiveApiClient({
+            proxyUrl: this.rules.PROXY_URL,
+            proxyVersion: this.rules.PROXY_VERSION,
+            timeoutMs: this.rules.REQUEST_TIMEOUT_MS,
+            maxResponseBytes: this.rules.MAX_PROXY_RESPONSE_BYTES,
+            fetchImpl: options.fetchImpl,
+            sessionId: options.gameSession
+        });
         this.contract = new AeroLiveLlmContract(this.rules);
-        this.controllers = new Set();
         this.chatCache = new Map();
         this.generation = 0;
         this.requestSequence = 0;
@@ -64,11 +67,12 @@ export class AeroLiveAiService {
         }
 
         const viewerIds = this.#resolveViewerIds(context);
+        const validationContext = { ...context, viewerIds };
         let proxyContext;
         try {
             proxyContext = this.#buildChatProxyContext(context, viewerIds);
         } catch (error) {
-            this.#setIdleStatus('로컬 폴백');
+            this.#setProxyFailureStatus(error, '로컬 폴백');
             this.#reportSafeWarning('일반 채팅 요청 정리', error);
             return { chats: [], source: 'fallback' };
         }
@@ -85,6 +89,7 @@ export class AeroLiveAiService {
             execute: (job) => this.#executeChatRequest(
                 job,
                 proxyContext,
+                validationContext,
                 cacheKey
             ),
             discardedResult: () => this.#buildDiscardedChatResult(),
@@ -119,7 +124,7 @@ export class AeroLiveAiService {
         try {
             proxyContext = this.#buildIntentProxyContext(context, viewerIds);
         } catch (error) {
-            this.#setIdleStatus('의도 판정 실패');
+            this.#setProxyFailureStatus(error, '의도 판정 실패');
             this.#reportSafeWarning('자유 채팅 요청 정리', error);
             return {
                 ...this.#buildTechnicalFailureResult(
@@ -130,7 +135,7 @@ export class AeroLiveAiService {
         }
         return this.#enqueueRequest({
             lane: 'intent',
-            execute: (job) => this.#executeIntentRequest(job, proxyContext),
+            execute: (job) => this.#executeIntentRequest(job, proxyContext, viewerIds),
             discardedResult: () => this.#buildDiscardedIntentResult(),
             overflowResult: () => ({
                 ...this.#buildTechnicalFailureResult(
@@ -143,7 +148,7 @@ export class AeroLiveAiService {
     }
 
     /**
-     * 진행 중인 모든 Gemini 요청을 취소하고 늦게 도착한 결과를 무효화합니다.
+     * 진행 중인 모든 Worker 요청을 취소하고 늦게 도착한 결과를 무효화합니다.
      */
     abortAll() {
         this.generation += 1;
@@ -154,10 +159,7 @@ export class AeroLiveAiService {
         for (const job of queuedJobs) {
             this.#settleJob(job, job.discardedResult());
         }
-        for (const controller of this.controllers) {
-            controller.abort();
-        }
-        this.controllers.clear();
+        this.apiClient.abortAll();
         if (!this.destroyed) {
             this.idleStatus = 'AI 요청 취소됨';
         }
@@ -170,6 +172,7 @@ export class AeroLiveAiService {
     destroy() {
         this.destroyed = true;
         this.abortAll();
+        this.apiClient.destroy();
         this.chatCache.clear();
         this.idleStatus = '종료됨';
         this.status = '종료됨';
@@ -277,11 +280,12 @@ export class AeroLiveAiService {
      * 일반 채팅 프록시 요청 하나를 실행합니다.
      * @param {object} job - 활성 FIFO 작업입니다.
      * @param {object} proxyContext - Worker로 보낼 최소 방송 맥락입니다.
+     * @param {object} validationContext - 기존 계약 응답 검증 맥락입니다.
      * @param {string} cacheKey - 채팅 캐시 키입니다.
      * @returns {Promise<object>} 채팅 생성 결과입니다.
      * @private
      */
-    async #executeChatRequest(job, proxyContext, cacheKey) {
+    async #executeChatRequest(job, proxyContext, validationContext, cacheKey) {
         const cached = this.chatCache.get(cacheKey);
         if (cached) {
             this.#touchCacheEntry(cacheKey, cached);
@@ -290,14 +294,14 @@ export class AeroLiveAiService {
         }
 
         try {
-            const responseText = await this.#requestProxy('chat', proxyContext);
+            const responseText = await this.apiClient.request('chat', proxyContext);
             if (!this.#isJobCurrent(job)) {
                 return job.discardedResult();
             }
 
             const validated = this.contract.parseChatResponse(
                 responseText,
-                proxyContext
+                validationContext
             );
             if (!this.#isJobCurrent(job)) {
                 return job.discardedResult();
@@ -310,7 +314,7 @@ export class AeroLiveAiService {
             if (!this.#isJobCurrent(job)) {
                 return job.discardedResult();
             }
-            this.#setIdleStatus('로컬 폴백');
+            this.#setProxyFailureStatus(error, '로컬 폴백');
             if (error?.name !== 'AbortError') {
                 this.#reportSafeWarning('일반 채팅 생성', error);
             }
@@ -322,19 +326,20 @@ export class AeroLiveAiService {
      * 플레이어 메시지 의도 공급자 요청 하나를 실행합니다.
      * @param {object} job - 활성 FIFO 작업입니다.
      * @param {object} proxyContext - Worker로 보낼 최소 방송 맥락입니다.
+     * @param {string[]} viewerIds - 기존 계약 응답 검증용 시청자 ID입니다.
      * @returns {Promise<object>} 의도 판정 결과입니다.
      * @private
      */
-    async #executeIntentRequest(job, proxyContext) {
+    async #executeIntentRequest(job, proxyContext, viewerIds) {
         try {
-            const responseText = await this.#requestProxy('intent', proxyContext);
+            const responseText = await this.apiClient.request('intent', proxyContext);
             if (!this.#isJobCurrent(job)) {
                 return job.discardedResult();
             }
 
             const validated = this.contract.parseIntentResponse(
                 responseText,
-                proxyContext.viewerIds
+                viewerIds
             );
             this.#setIdleStatus('AI 온라인');
             return {
@@ -359,7 +364,7 @@ export class AeroLiveAiService {
                     source: 'provider-safety'
                 };
             }
-            this.#setIdleStatus('의도 판정 실패');
+            this.#setProxyFailureStatus(error, '의도 판정 실패');
             if (error?.name !== 'AbortError') {
                 this.#reportSafeWarning('자유 채팅 분류', error);
             }
@@ -455,135 +460,6 @@ export class AeroLiveAiService {
             source: 'discarded',
             discarded: true
         };
-    }
-
-    /**
-     * Worker API를 호출하고 Worker가 이미 검증한 strict JSON만 반환합니다.
-     * Gemini endpoint, 모델, systemInstruction, generationConfig는 브라우저에서 만들지 않습니다.
-     * @param {'chat'|'intent'} lane - Worker lane입니다.
-     * @param {object} context - Worker 계약에 맞춘 최소 게임 맥락입니다.
-     * @returns {Promise<string>} Worker가 검증한 strict JSON 문자열입니다.
-     * @private
-     */
-    async #requestProxy(lane, context) {
-        const fetchImpl = this.fetchImpl
-            || (typeof window !== 'undefined' ? window.fetch?.bind(window) : globalThis.fetch);
-        if (typeof fetchImpl !== 'function') {
-            throw new Error('FETCH_UNAVAILABLE');
-        }
-
-        const requestId = this.#createRequestId();
-        const controller = new AbortController();
-        const timeoutFunction = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout;
-        const clearTimeoutFunction = typeof window !== 'undefined' ? window.clearTimeout.bind(window) : clearTimeout;
-        let timedOut = false;
-        let abortListener = null;
-        const abortGate = new Promise((_resolve, reject) => {
-            abortListener = () => {
-                if (timedOut) {
-                    reject(new Error('REQUEST_TIMEOUT'));
-                    return;
-                }
-                const abortError = new Error('REQUEST_ABORTED');
-                abortError.name = 'AbortError';
-                reject(abortError);
-            };
-            controller.signal.addEventListener('abort', abortListener, { once: true });
-        });
-        const timeoutId = timeoutFunction(
-            () => {
-                timedOut = true;
-                controller.abort();
-            },
-            Math.max(1000, Number(this.rules.REQUEST_TIMEOUT_MS) || 8000)
-        );
-        this.controllers.add(controller);
-
-        const proxyPromise = (async () => {
-            const response = await fetchImpl(AERO_LIVE_PROXY_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Game-Session': this.gameSession
-                },
-                body: JSON.stringify({
-                    version: AERO_LIVE_PROXY_VERSION,
-                    requestId,
-                    lane,
-                    context
-                }),
-                signal: controller.signal
-            });
-            const responseText = await response.text();
-            if (new TextEncoder().encode(responseText).byteLength > MAX_PROXY_RESPONSE_BYTES) {
-                throw new Error('PROXY_RESPONSE_TOO_LARGE');
-            }
-            let responseBody;
-            try {
-                responseBody = JSON.parse(responseText);
-            } catch {
-                throw new Error('PROXY_INVALID_RESPONSE');
-            }
-            const safeCode = String(responseBody?.error?.code || '');
-            if (!response.ok || responseBody?.ok !== true) {
-                throw new Error(
-                    SAFE_PROXY_ERROR_CODES.has(safeCode)
-                        ? `PROXY_${safeCode}`
-                        : 'PROXY_INTERNAL_ERROR'
-                );
-            }
-            if (responseBody.version !== AERO_LIVE_PROXY_VERSION
-                || responseBody.requestId !== requestId
-                || responseBody.lane !== lane
-                || typeof responseBody.text !== 'string') {
-                throw new Error('PROXY_INVALID_RESPONSE');
-            }
-            return responseBody.text;
-        })();
-
-        // abort 뒤 프록시 구현이 늦게 reject해도 전역 unhandled로 남기지 않습니다.
-        void proxyPromise.catch(() => {});
-
-        try {
-            return await Promise.race([proxyPromise, abortGate]);
-        } catch (error) {
-            if (timedOut && error?.name === 'AbortError') {
-                throw new Error('REQUEST_TIMEOUT');
-            }
-            throw error;
-        } finally {
-            clearTimeoutFunction(timeoutId);
-            if (abortListener) {
-                controller.signal.removeEventListener('abort', abortListener);
-            }
-            this.controllers.delete(controller);
-        }
-    }
-
-    /**
-     * Worker 요청에서 사용할 메모리 전용 게임 세션 ID를 반환합니다.
-     * @param {*} value - 테스트에서 주입할 ID입니다.
-     * @returns {string} 안전한 세션 ID입니다.
-     * @private
-     */
-    #resolveGameSession(value) {
-        const supplied = String(value || '');
-        if (/^[A-Za-z0-9][A-Za-z0-9_-]{15,95}$/u.test(supplied)) {
-            return supplied;
-        }
-        const randomId = globalThis.crypto?.randomUUID?.()
-            || `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
-        return `aero_${randomId}`;
-    }
-
-    /**
-     * 현재 탭 수명에만 연결된 requestId를 만듭니다.
-     * @returns {string} Worker 요청 ID입니다.
-     * @private
-     */
-    #createRequestId() {
-        this.proxyRequestSequence = (this.proxyRequestSequence || 0) + 1;
-        return `${this.gameSession}_r${this.proxyRequestSequence}`;
     }
 
     /**
@@ -696,6 +572,7 @@ export class AeroLiveAiService {
             lane,
             schema: this.rules.SCHEMA_VERSION,
             prompt: this.rules.PROMPT_REVISION,
+            proxy: this.rules.PROXY_VERSION,
             payload
         });
     }
@@ -738,6 +615,26 @@ export class AeroLiveAiService {
             ? candidate
             : 'REQUEST_FAILED';
         console.warn(`[AeroLiveAiService] ${label} 폴백: ${safeCode}`);
+    }
+
+    /**
+     * Worker의 안전 오류 코드만 UI 상태로 분류합니다.
+     * @param {Error} error - Worker client 오류입니다.
+     * @param {string} fallbackStatus - 그 밖의 안전 상태입니다.
+     * @private
+     */
+    #setProxyFailureStatus(error, fallbackStatus) {
+        const code = String(error?.message || error || '').replace(/^PROXY_/u, '');
+        if (code === 'RATE_LIMITED') {
+            this.#setIdleStatus('AI 요청 제한');
+            return;
+        }
+        if (code === 'UPSTREAM_TIMEOUT' || code === 'UPSTREAM_UNAVAILABLE'
+            || code === 'REQUEST_TIMEOUT') {
+            this.#setIdleStatus('AI 연결 지연');
+            return;
+        }
+        this.#setIdleStatus(fallbackStatus);
     }
 
     /**

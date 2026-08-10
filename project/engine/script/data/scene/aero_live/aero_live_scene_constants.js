@@ -144,9 +144,12 @@ export const AERO_LIVE_SCENE_CONSTANTS = Object.freeze({
     }),
     AI: Object.freeze({
         ENABLED: true,
+        PROXY_URL: 'https://api.jukchang.com/v1/aero-live',
+        PROXY_VERSION: 'aero-live-proxy-v1',
         PROMPT_REVISION: 'aero-live-chat-v6',
         SCHEMA_VERSION: 'aero-live-ai-v1',
         REQUEST_TIMEOUT_MS: 8000,
+        MAX_PROXY_RESPONSE_BYTES: 96 * 1024,
         THINKING_LEVEL: 'low',
         CHAT_MAX_OUTPUT_TOKENS: 2048,
         INTENT_MAX_OUTPUT_TOKENS: 768,
